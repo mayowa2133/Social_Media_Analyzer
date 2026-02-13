@@ -1,0 +1,38 @@
+# OS and editor
+.DS_Store
+.vscode/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+apps/api/venv/
+apps/api/tmp_test.db
+
+# Node / Next
+node_modules/
+apps/web/node_modules/
+apps/web/.next/
+apps/web/test-results/
+apps/web/playwright-report/
+apps/web/tsconfig.tsbuildinfo
+
+# Local generated artifacts
+all_skills.txt
+destruction_matches.txt
+execution_matches.txt
+execution_matches_refined.txt
+networking_matches.txt
+networking_matches_refined.txt
+sensitive_matches.txt
+
+# Local skill dumps not part of app source
+skills/
+vendor/
