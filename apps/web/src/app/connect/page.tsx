@@ -3,11 +3,27 @@
 import Link from "next/link";
 import { signIn, useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 export default function ConnectPage() {
     const { data: session, status } = useSession();
     const router = useRouter();
+    const [authError, setAuthError] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (typeof window === "undefined") {
+            return;
+        }
+        const value = new URLSearchParams(window.location.search).get("error");
+        setAuthError(value);
+    }, []);
+
+    const errorMessage =
+        authError === "OAuthSignin" || authError === "google"
+            ? "Google OAuth is not configured for this frontend. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET, then restart the web server."
+            : authError
+              ? "Could not complete Google sign-in. Please try again."
+              : null;
 
     // Redirect if already connected
     useEffect(() => {
@@ -21,96 +37,141 @@ export default function ConnectPage() {
     };
 
     return (
-        <div className="min-h-screen p-8">
-            {/* Header */}
-            <header className="max-w-4xl mx-auto mb-8">
-                <Link href="/" className="text-2xl font-bold text-white">
-                    <span className="gradient-text">SPC</span>
-                </Link>
-            </header>
-
-            <main className="max-w-2xl mx-auto">
-                <div className="text-center mb-12">
-                    <h1 className="text-3xl font-bold text-white mb-4">Connect Your Channels</h1>
-                    <p className="text-gray-400">Link your social media accounts to start analyzing your performance.</p>
-                </div>
-
-                {/* Loading State */}
-                {status === "loading" && (
-                    <div className="text-center py-12">
-                        <div className="animate-spin w-8 h-8 border-4 border-purple-500 border-t-transparent rounded-full mx-auto mb-4"></div>
-                        <p className="text-gray-400">Loading...</p>
+        <div className="min-h-screen bg-[#e8e8e8] px-3 py-4 md:px-8 md:py-6">
+            <div className="mx-auto w-full max-w-[1500px] overflow-hidden rounded-[30px] border border-[#d8d8d8] bg-[#f5f5f5] shadow-[0_35px_90px_rgba(0,0,0,0.12)]">
+                <header className="flex h-16 items-center justify-between border-b border-[#dfdfdf] bg-[#fafafa] px-4 md:px-6">
+                    <div className="flex items-center gap-4">
+                        <Link href="/" className="text-lg font-bold text-[#1f1f1f]">
+                            SPC Studio
+                        </Link>
+                        <nav className="hidden items-center gap-4 text-sm text-[#6b6b6b] md:flex">
+                            <Link href="/dashboard" className="hover:text-[#151515]">Dashboard</Link>
+                            <Link href="/competitors" className="hover:text-[#151515]">Competitors</Link>
+                            <Link href="/audit/new" className="hover:text-[#151515]">Audit Workspace</Link>
+                            <Link href="/connect" className="font-medium text-[#1b1b1b]">Connect</Link>
+                        </nav>
                     </div>
-                )}
+                    <div className="flex items-center gap-3">
+                        <span className="hidden rounded-full border border-[#d5d5d5] bg-white px-3 py-1 text-xs text-[#666] md:inline-flex">
+                            YouTube-First MVP
+                        </span>
+                    </div>
+                </header>
 
-                {/* Platform Cards */}
-                {status !== "loading" && (
-                    <div className="space-y-4">
-                        {/* YouTube */}
-                        <div className="glass-card p-6 flex items-center justify-between">
-                            <div className="flex items-center gap-4">
-                                <div className="w-12 h-12 bg-red-600 rounded-xl flex items-center justify-center">
-                                    <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24">
-                                        <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
-                                    </svg>
-                                </div>
-                                <div>
-                                    <h3 className="text-white font-semibold">YouTube</h3>
-                                    <p className="text-gray-400 text-sm">Connect via Google OAuth</p>
-                                </div>
+                <div className="grid min-h-[calc(100vh-8.5rem)] grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)_320px]">
+                    <aside className="border-b border-[#dfdfdf] bg-[#f8f8f8] p-4 xl:border-b-0 xl:border-r">
+                        <h2 className="mb-1 text-sm font-semibold text-[#222]">Connection Checklist</h2>
+                        <p className="mb-4 text-xs text-[#777]">
+                            Link YouTube to unlock diagnosis, competitor benchmarks, and audits.
+                        </p>
+
+                        <div className="rounded-2xl border border-[#dfdfdf] bg-white p-3">
+                            <ul className="space-y-2 text-xs text-[#575757]">
+                                <li>1. Use Google account with your channel</li>
+                                <li>2. Approve requested OAuth scopes</li>
+                                <li>3. Return here and continue to dashboard</li>
+                            </ul>
+                        </div>
+
+                        <div className="mt-4 rounded-2xl border border-[#dfdfdf] bg-white p-3">
+                            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#666]">Status</h3>
+                            <p className="text-sm text-[#454545]">
+                                {status === "loading" ? "Loading session..." : "Ready to connect"}
+                            </p>
+                        </div>
+
+                        {errorMessage && (
+                            <div className="mt-4 rounded-xl border border-[#e3c4c4] bg-[#fff1f1] px-3 py-2 text-xs text-[#7f3a3a]">
+                                {errorMessage}
                             </div>
-                            <button
-                                onClick={handleConnectYouTube}
-                                className="px-6 py-2 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition-colors"
+                        )}
+                    </aside>
+
+                    <section className="border-b border-[#dfdfdf] bg-[#f2f2f2] px-4 py-4 md:px-6 xl:border-b-0">
+                        <div className="mx-auto flex max-w-4xl flex-col gap-5">
+                            <div className="rounded-[28px] border border-[#dcdcdc] bg-white p-6 shadow-[0_14px_40px_rgba(0,0,0,0.06)] md:p-8">
+                                <h1 className="text-2xl font-bold text-[#1f1f1f] md:text-3xl">Connect Your Channels</h1>
+                                <p className="mt-2 text-sm text-[#666]">
+                                    Start by connecting YouTube through Google OAuth. TikTok and Instagram stay manual for now.
+                                </p>
+
+                                {status === "loading" ? (
+                                    <div className="py-12 text-center">
+                                        <div className="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-4 border-[#777] border-t-transparent"></div>
+                                        <p className="text-sm text-[#717171]">Checking authentication state...</p>
+                                    </div>
+                                ) : (
+                                    <div className="mt-6 space-y-4">
+                                        <div className="flex items-center justify-between gap-4 rounded-2xl border border-[#dcdcdc] bg-[#fafafa] p-4">
+                                            <div className="flex items-center gap-4">
+                                                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#d93b3b] text-white">
+                                                    <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
+                                                        <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
+                                                    </svg>
+                                                </div>
+                                                <div>
+                                                    <h2 className="text-sm font-semibold text-[#222]">YouTube</h2>
+                                                    <p className="text-xs text-[#666]">Connect via Google OAuth</p>
+                                                </div>
+                                            </div>
+                                            <button
+                                                onClick={handleConnectYouTube}
+                                                className="rounded-xl bg-[#1f1f1f] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#111]"
+                                            >
+                                                Connect
+                                            </button>
+                                        </div>
+
+                                        <div className="flex items-center justify-between gap-4 rounded-2xl border border-[#dcdcdc] bg-[#fafafa] p-4 opacity-70">
+                                            <div>
+                                                <h2 className="text-sm font-semibold text-[#222]">TikTok</h2>
+                                                <p className="text-xs text-[#666]">Coming soon (manual upload available)</p>
+                                            </div>
+                                            <span className="rounded-lg border border-[#dbdbdb] bg-white px-3 py-1 text-xs text-[#6f6f6f]">
+                                                Coming Soon
+                                            </span>
+                                        </div>
+
+                                        <div className="flex items-center justify-between gap-4 rounded-2xl border border-[#dcdcdc] bg-[#fafafa] p-4 opacity-70">
+                                            <div>
+                                                <h2 className="text-sm font-semibold text-[#222]">Instagram</h2>
+                                                <p className="text-xs text-[#666]">Coming soon (manual upload available)</p>
+                                            </div>
+                                            <span className="rounded-lg border border-[#dbdbdb] bg-white px-3 py-1 text-xs text-[#6f6f6f]">
+                                                Coming Soon
+                                            </span>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </section>
+
+                    <aside className="bg-[#f8f8f8] p-4 xl:border-l xl:border-[#dfdfdf]">
+                        <div className="rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                            <h3 className="mb-2 text-sm font-semibold text-[#222]">What You Unlock</h3>
+                            <ul className="space-y-1 text-xs text-[#666]">
+                                <li>Diagnosis from channel performance data</li>
+                                <li>Competitor gap and hook intelligence</li>
+                                <li>Audit workspace and consolidated reports</li>
+                            </ul>
+                        </div>
+
+                        <div className="mt-4 rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#676767]">Manual Path</h3>
+                            <p className="mb-3 text-xs text-[#6d6d6d]">
+                                Skip OAuth and run a video audit directly using URL or file upload.
+                            </p>
+                            <Link
+                                href="/audit/new"
+                                className="inline-flex rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-sm font-medium text-[#2f2f2f] hover:bg-[#efefef]"
                             >
-                                Connect
-                            </button>
+                                Open Audit Workspace
+                            </Link>
                         </div>
-
-                        {/* TikTok */}
-                        <div className="glass-card p-6 flex items-center justify-between opacity-60">
-                            <div className="flex items-center gap-4">
-                                <div className="w-12 h-12 bg-black rounded-xl flex items-center justify-center border border-white/20">
-                                    <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24">
-                                        <path d="M12.525.02c1.31-.02 2.61-.01 3.91-.02.08 1.53.63 3.09 1.75 4.17 1.12 1.11 2.7 1.62 4.24 1.79v4.03c-1.44-.05-2.89-.35-4.2-.97-.57-.26-1.1-.59-1.62-.93-.01 2.92.01 5.84-.02 8.75-.08 1.4-.54 2.79-1.35 3.94-1.31 1.92-3.58 3.17-5.91 3.21-1.43.08-2.86-.31-4.08-1.03-2.02-1.19-3.44-3.37-3.65-5.71-.02-.5-.03-1-.01-1.49.18-1.9 1.12-3.72 2.58-4.96 1.66-1.44 3.98-2.13 6.15-1.72.02 1.48-.04 2.96-.04 4.44-.99-.32-2.15-.23-3.02.37-.63.41-1.11 1.04-1.36 1.75-.21.51-.15 1.07-.14 1.61.24 1.64 1.82 3.02 3.5 2.87 1.12-.01 2.19-.66 2.77-1.61.19-.33.4-.67.41-1.06.1-1.79.06-3.57.07-5.36.01-4.03-.01-8.05.02-12.07z" />
-                                    </svg>
-                                </div>
-                                <div>
-                                    <h3 className="text-white font-semibold">TikTok</h3>
-                                    <p className="text-gray-400 text-sm">Coming soon (manual upload available)</p>
-                                </div>
-                            </div>
-                            <span className="px-4 py-2 bg-gray-700 text-gray-400 text-sm rounded-lg">Coming Soon</span>
-                        </div>
-
-                        {/* Instagram */}
-                        <div className="glass-card p-6 flex items-center justify-between opacity-60">
-                            <div className="flex items-center gap-4">
-                                <div className="w-12 h-12 bg-gradient-to-br from-purple-600 via-pink-500 to-orange-400 rounded-xl flex items-center justify-center">
-                                    <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24">
-                                        <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z" />
-                                    </svg>
-                                </div>
-                                <div>
-                                    <h3 className="text-white font-semibold">Instagram</h3>
-                                    <p className="text-gray-400 text-sm">Coming soon (manual upload available)</p>
-                                </div>
-                            </div>
-                            <span className="px-4 py-2 bg-gray-700 text-gray-400 text-sm rounded-lg">Coming Soon</span>
-                        </div>
-                    </div>
-                )}
-
-                {/* Manual Upload Option */}
-                <div className="mt-8 text-center">
-                    <p className="text-gray-400 text-sm mb-4">
-                        Don&apos;t want to connect? You can also manually upload your analytics exports.
-                    </p>
-                    <Link href="/audit/new" className="text-purple-400 hover:text-purple-300 font-medium">
-                        Upload manually →
-                    </Link>
+                    </aside>
                 </div>
-            </main>
+            </div>
         </div>
     );
 }

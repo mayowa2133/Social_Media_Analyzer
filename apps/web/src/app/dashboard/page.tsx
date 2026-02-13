@@ -90,149 +90,152 @@ export default function DashboardPage() {
 
     const isConnected = !!profile?.youtube_connected;
 
+    const statusLabel = status === "loading" || syncing
+        ? (syncing ? "Syncing YouTube connection..." : "Loading session...")
+        : isConnected
+            ? `Connected to YouTube${profile?.channel_title ? `: ${profile.channel_title}` : ""}`
+            : "YouTube not connected yet";
+
+    const statusTone = status === "loading" || syncing
+        ? "bg-[#f0f0f0] border-[#dddddd] text-[#6b6b6b]"
+        : isConnected
+            ? "bg-[#edf7ed] border-[#cfe6cf] text-[#2e5a33]"
+            : "bg-[#fff5e8] border-[#ecdcc0] text-[#7a6032]";
+
     return (
-        <div className="min-h-screen p-8">
-            <header className="max-w-7xl mx-auto mb-8">
-                <div className="flex justify-between items-center">
-                    <Link href="/" className="text-2xl font-bold text-white">
-                        <span className="gradient-text">SPC</span>
-                    </Link>
-                    <nav className="flex items-center gap-6">
-                        <Link href="/dashboard" className="text-white font-medium">Dashboard</Link>
-                        <Link href="/competitors" className="text-gray-400 hover:text-white transition-colors">Competitors</Link>
-                        <Link href="/audit/new" className="text-gray-400 hover:text-white transition-colors">New Audit</Link>
+        <div className="min-h-screen bg-[#e8e8e8] px-3 py-4 md:px-8 md:py-6">
+            <div className="mx-auto w-full max-w-[1500px] overflow-hidden rounded-[30px] border border-[#d8d8d8] bg-[#f5f5f5] shadow-[0_35px_90px_rgba(0,0,0,0.12)]">
+                <header className="flex h-16 items-center justify-between border-b border-[#dfdfdf] bg-[#fafafa] px-4 md:px-6">
+                    <div className="flex items-center gap-4">
+                        <Link href="/" className="text-lg font-bold text-[#1f1f1f]">
+                            SPC Studio
+                        </Link>
+                        <nav className="hidden items-center gap-4 text-sm text-[#6b6b6b] md:flex">
+                            <Link href="/dashboard" className="font-medium text-[#1b1b1b]">Dashboard</Link>
+                            <Link href="/competitors" className="hover:text-[#151515]">Competitors</Link>
+                            <Link href="/audit/new" className="hover:text-[#151515]">Audit Workspace</Link>
+                        </nav>
+                    </div>
+                    <div className="flex items-center gap-3">
                         {session && (
                             <button
                                 onClick={() => signOut({ callbackUrl: "/" })}
-                                className="text-gray-400 hover:text-white transition-colors"
+                                className="rounded-xl border border-[#d6d6d6] bg-white px-3 py-1.5 text-sm text-[#575757] hover:text-[#1f1f1f]"
                             >
                                 Logout
                             </button>
                         )}
-                    </nav>
-                </div>
-            </header>
+                    </div>
+                </header>
 
-            <main className="max-w-7xl mx-auto">
-                <h1 className="text-3xl font-bold text-white mb-8">Dashboard</h1>
-
-                {status === "loading" || syncing ? (
-                    <div className="flex items-center gap-2 text-gray-400 mb-6">
-                        <div className="animate-spin w-4 h-4 border-2 border-purple-500 border-t-transparent rounded-full"></div>
-                        {syncing ? "Syncing YouTube connection..." : "Loading session..."}
-                    </div>
-                ) : isConnected ? (
-                    <div className="flex items-center gap-2 text-green-400 mb-6">
-                        <span className="w-2 h-2 bg-green-400 rounded-full"></span>
-                        Connected to YouTube{profile?.channel_title ? `: ${profile.channel_title}` : ""}
-                    </div>
-                ) : (
-                    <div className="mb-6">
-                        <Link
-                            href="/connect"
-                            className="inline-flex items-center gap-2 text-yellow-400 hover:text-yellow-300"
-                        >
-                            <span className="w-2 h-2 bg-yellow-400 rounded-full"></span>
-                            Connect YouTube to get started →
-                        </Link>
-                    </div>
-                )}
-
-                {diagnosis && (
-                    <div className="mb-8">
-                        <div className="flex justify-between items-center mb-4">
-                            <h2 className="text-xl font-bold text-white">Channel Diagnosis</h2>
-                            <Link href="/report/latest" className="text-sm text-purple-400 hover:text-purple-300 font-bold flex items-center gap-1 group">
-                                View Full Report <span className="group-hover:translate-x-1 transition-transform">→</span>
-                            </Link>
-                        </div>
-                        <DiagnosisCard diagnosis={diagnosis} loading={loading} />
-                    </div>
-                )}
-
-                <div className="grid md:grid-cols-4 gap-6 mb-8">
-                    <div className="glass-card p-6">
-                        <p className="text-gray-400 text-sm mb-1">Connected Channels</p>
-                        <p className="text-3xl font-bold text-white">{isConnected ? 1 : 0}</p>
-                    </div>
-                    <div className="glass-card p-6">
-                        <p className="text-gray-400 text-sm mb-1">Competitors Tracked</p>
-                        <p className="text-3xl font-bold text-white">{competitors.length}</p>
-                    </div>
-                    <div className="glass-card p-6">
-                        <p className="text-gray-400 text-sm mb-1">Audits Completed</p>
-                        <p className="text-3xl font-bold text-white">{auditCount}</p>
-                    </div>
-                    <div className="glass-card p-6">
-                        <p className="text-gray-400 text-sm mb-1">API Status</p>
-                        <p className={`text-lg font-medium ${error ? "text-red-400" : "text-green-400"}`}>
-                            {loading ? "..." : error ? "Offline" : "Online"}
+                <main className="grid min-h-[calc(100vh-8.5rem)] grid-cols-1 xl:grid-cols-[320px_minmax(0,1fr)]">
+                    <aside className="border-b border-[#dfdfdf] bg-[#f8f8f8] p-4 xl:border-b-0 xl:border-r">
+                        <h1 className="text-xl font-bold text-[#202020]">Creator Dashboard</h1>
+                        <p className="mt-1 text-sm text-[#6f6f6f]">
+                            Track channel health, competitor position, and audit momentum.
                         </p>
-                    </div>
-                </div>
 
-                <div className="grid md:grid-cols-3 gap-4 mb-8">
-                    <Link href="/competitors" className="glass-card p-4 hover:bg-white/10 transition-colors">
-                        <h3 className="text-white font-medium mb-1">Add Competitors</h3>
-                        <p className="text-gray-400 text-sm">Track competitor channels for benchmarking</p>
-                    </Link>
-                    <Link href="/audit/new" className="glass-card p-4 hover:bg-white/10 transition-colors">
-                        <h3 className="text-white font-medium mb-1">Run Audit</h3>
-                        <p className="text-gray-400 text-sm">Analyze your content and get recommendations</p>
-                    </Link>
-                    <Link href="/connect" className="glass-card p-4 hover:bg-white/10 transition-colors">
-                        <h3 className="text-white font-medium mb-1">Connect Platforms</h3>
-                        <p className="text-gray-400 text-sm">Link more social media accounts</p>
-                    </Link>
-                </div>
-
-                {competitors.length > 0 && (
-                    <div className="mb-8">
-                        <h2 className="text-xl font-semibold text-white mb-4">Tracked Competitors</h2>
-                        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                            {competitors.map((comp) => (
-                                <div key={comp.id} className="glass-card p-4 flex items-center gap-4">
-                                    {comp.thumbnail_url && (
-                                        <img
-                                            src={comp.thumbnail_url}
-                                            alt={comp.title}
-                                            className="w-12 h-12 rounded-full"
-                                        />
-                                    )}
-                                    <div className="flex-1 min-w-0">
-                                        <h3 className="text-white font-medium truncate">{comp.title}</h3>
-                                        <p className="text-gray-400 text-sm">
-                                            {Number(comp.subscriber_count || 0).toLocaleString()} subscribers
-                                        </p>
-                                    </div>
-                                </div>
-                            ))}
+                        <div className={`mt-4 rounded-2xl border px-3 py-2 text-sm ${statusTone}`}>
+                            {statusLabel}
                         </div>
-                    </div>
-                )}
 
-                {!isConnected && competitors.length === 0 && (
-                    <div className="glass-card p-12 text-center">
-                        <div className="text-6xl mb-4">📊</div>
-                        <h2 className="text-xl font-semibold text-white mb-2">Get Started</h2>
-                        <p className="text-gray-400 mb-6">Connect your YouTube channel or add competitors to begin analysis.</p>
-                        <div className="flex gap-4 justify-center">
+                        {!isConnected && (
                             <Link
                                 href="/connect"
-                                className="px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-medium rounded-lg hover:opacity-90 transition-opacity"
+                                className="mt-3 inline-flex text-sm font-medium text-[#5d4ea2] hover:text-[#3d2f84]"
                             >
-                                Connect YouTube
+                                Connect YouTube →
                             </Link>
-                            <Link
-                                href="/competitors"
-                                className="px-6 py-3 bg-white/10 text-white font-medium rounded-lg hover:bg-white/20 transition-colors"
-                            >
+                        )}
+
+                        <div className="mt-5 space-y-3">
+                            <div className="rounded-2xl border border-[#dddddd] bg-white p-4">
+                                <p className="text-xs uppercase tracking-wide text-[#777]">Connected Channels</p>
+                                <p className="mt-1 text-3xl font-bold text-[#1f1f1f]">{isConnected ? 1 : 0}</p>
+                            </div>
+                            <div className="rounded-2xl border border-[#dddddd] bg-white p-4">
+                                <p className="text-xs uppercase tracking-wide text-[#777]">Competitors Tracked</p>
+                                <p className="mt-1 text-3xl font-bold text-[#1f1f1f]">{competitors.length}</p>
+                            </div>
+                            <div className="rounded-2xl border border-[#dddddd] bg-white p-4">
+                                <p className="text-xs uppercase tracking-wide text-[#777]">Audits Completed</p>
+                                <p className="mt-1 text-3xl font-bold text-[#1f1f1f]">{auditCount}</p>
+                            </div>
+                            <div className="rounded-2xl border border-[#dddddd] bg-white p-4">
+                                <p className="text-xs uppercase tracking-wide text-[#777]">API Status</p>
+                                <p className={`mt-1 text-lg font-semibold ${error ? "text-[#8a3a3a]" : "text-[#2f5d35]"}`}>
+                                    {loading ? "..." : error ? "Offline" : "Online"}
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="mt-5 space-y-2">
+                            <Link href="/competitors" className="block rounded-xl border border-[#ddd] bg-white px-3 py-2 text-sm text-[#2b2b2b] hover:bg-[#f4f4f4]">
                                 Add Competitors
                             </Link>
+                            <Link href="/audit/new" className="block rounded-xl border border-[#ddd] bg-white px-3 py-2 text-sm text-[#2b2b2b] hover:bg-[#f4f4f4]">
+                                Run New Audit
+                            </Link>
+                            <Link href="/report/latest" className="block rounded-xl border border-[#ddd] bg-white px-3 py-2 text-sm text-[#2b2b2b] hover:bg-[#f4f4f4]">
+                                View Latest Report
+                            </Link>
                         </div>
-                    </div>
-                )}
-            </main>
+                    </aside>
+
+                    <section className="bg-[#f2f2f2] p-4 md:p-6">
+                        {diagnosis && (
+                            <div className="mb-6">
+                                <div className="mb-3 flex items-center justify-between">
+                                    <h2 className="text-xl font-bold text-[#1f1f1f]">Channel Diagnosis</h2>
+                                    <Link href="/report/latest" className="text-sm font-semibold text-[#4f4b9e] hover:text-[#383277]">
+                                        View Full Report →
+                                    </Link>
+                                </div>
+                                <DiagnosisCard diagnosis={diagnosis} loading={loading} />
+                            </div>
+                        )}
+
+                        {competitors.length > 0 && (
+                            <div className="mb-6">
+                                <h2 className="mb-3 text-xl font-semibold text-[#1f1f1f]">Tracked Competitors</h2>
+                                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                                    {competitors.map((comp) => (
+                                        <div key={comp.id} className="flex items-center gap-3 rounded-2xl border border-[#dbdbdb] bg-white p-3">
+                                            {comp.thumbnail_url && (
+                                                <img src={comp.thumbnail_url} alt={comp.title} className="h-11 w-11 rounded-full border border-[#e2e2e2]" />
+                                            )}
+                                            <div className="min-w-0">
+                                                <h3 className="truncate text-sm font-semibold text-[#232323]">{comp.title}</h3>
+                                                <p className="text-xs text-[#727272]">
+                                                    {Number(comp.subscriber_count || 0).toLocaleString()} subscribers
+                                                </p>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {!isConnected && competitors.length === 0 && (
+                            <div className="rounded-3xl border border-[#dadada] bg-white p-10 text-center shadow-[0_12px_30px_rgba(0,0,0,0.05)]">
+                                <div className="mb-4 text-5xl">📊</div>
+                                <h2 className="mb-2 text-2xl font-bold text-[#1f1f1f]">Get Started</h2>
+                                <p className="mx-auto mb-5 max-w-lg text-sm text-[#6d6d6d]">
+                                    Connect your YouTube channel and add competitors to unlock scoring benchmarks and strategy analysis.
+                                </p>
+                                <div className="flex flex-wrap justify-center gap-3">
+                                    <Link href="/connect" className="rounded-xl bg-[#1d1d1d] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#101010]">
+                                        Connect YouTube
+                                    </Link>
+                                    <Link href="/competitors" className="rounded-xl border border-[#d9d9d9] bg-white px-5 py-2.5 text-sm font-semibold text-[#333] hover:bg-[#f7f7f7]">
+                                        Add Competitors
+                                    </Link>
+                                </div>
+                            </div>
+                        )}
+                    </section>
+                </main>
+            </div>
         </div>
     );
 }

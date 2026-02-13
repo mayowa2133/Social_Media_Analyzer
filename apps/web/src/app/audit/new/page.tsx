@@ -10,6 +10,7 @@ import {
     RetentionPoint,
     runMultimodalAudit,
     syncYouTubeSession,
+    uploadAuditVideo,
 } from "@/lib/api";
 
 function sleep(ms: number) {
@@ -19,7 +20,9 @@ function sleep(ms: number) {
 export default function NewAuditPage() {
     const router = useRouter();
     const { data: session } = useSession();
+    const [sourceMode, setSourceMode] = useState<"url" | "upload">("url");
     const [videoUrl, setVideoUrl] = useState("");
+    const [videoFile, setVideoFile] = useState<File | null>(null);
     const [retentionJson, setRetentionJson] = useState("");
     const [running, setRunning] = useState(false);
     const [progressMessage, setProgressMessage] = useState<string | null>(null);
@@ -51,8 +54,12 @@ export default function NewAuditPage() {
         setError(null);
         setProgressMessage(null);
 
-        if (!videoUrl.trim()) {
+        if (sourceMode === "url" && !videoUrl.trim()) {
             setError("Enter a YouTube video URL to run the audit.");
+            return;
+        }
+        if (sourceMode === "upload" && !videoFile) {
+            setError("Select a video file to upload.");
             return;
         }
 
@@ -73,12 +80,24 @@ export default function NewAuditPage() {
         setRunning(true);
         try {
             const userId = await resolveUserId();
-            const run = await runMultimodalAudit({
-                source_mode: "url",
-                video_url: videoUrl.trim(),
-                retention_points: retentionPoints,
-                user_id: userId,
-            });
+            let run;
+            if (sourceMode === "upload") {
+                setProgressMessage("Uploading video...");
+                const upload = await uploadAuditVideo(videoFile as File, userId);
+                run = await runMultimodalAudit({
+                    source_mode: "upload",
+                    upload_id: upload.upload_id,
+                    retention_points: retentionPoints,
+                    user_id: userId,
+                });
+            } else {
+                run = await runMultimodalAudit({
+                    source_mode: "url",
+                    video_url: videoUrl.trim(),
+                    retention_points: retentionPoints,
+                    user_id: userId,
+                });
+            }
 
             setProgressMessage("Audit started. Processing video...");
 
@@ -105,73 +124,208 @@ export default function NewAuditPage() {
     }
 
     return (
-        <div className="min-h-screen p-8">
-            <header className="max-w-7xl mx-auto mb-8">
-                <div className="flex justify-between items-center">
-                    <Link href="/" className="text-2xl font-bold text-white">
-                        <span className="gradient-text">SPC</span>
-                    </Link>
-                    <nav className="flex gap-6">
-                        <Link href="/dashboard" className="text-gray-400 hover:text-white transition-colors">Dashboard</Link>
-                        <Link href="/competitors" className="text-gray-400 hover:text-white transition-colors">Competitors</Link>
-                        <Link href="/audit/new" className="text-white font-medium">New Audit</Link>
-                    </nav>
+        <div className="min-h-screen bg-[#e8e8e8] px-3 py-4 md:px-8 md:py-6">
+            <form onSubmit={handleRunAudit} className="mx-auto w-full max-w-[1500px]">
+                <div className="overflow-hidden rounded-[30px] border border-[#d8d8d8] bg-[#f5f5f5] shadow-[0_35px_90px_rgba(0,0,0,0.12)]">
+                    <header className="flex h-16 items-center justify-between border-b border-[#dfdfdf] bg-[#fafafa] px-4 md:px-6">
+                        <div className="flex items-center gap-4">
+                            <Link href="/" className="text-lg font-bold text-[#1f1f1f]">
+                                SPC Studio
+                            </Link>
+                            <nav className="hidden items-center gap-4 text-sm text-[#6b6b6b] md:flex">
+                                <Link href="/dashboard" className="hover:text-[#151515]">Dashboard</Link>
+                                <Link href="/competitors" className="hover:text-[#151515]">Competitors</Link>
+                                <Link href="/audit/new" className="font-medium text-[#1b1b1b]">Audit Workspace</Link>
+                            </nav>
+                        </div>
+
+                        <div className="hidden items-center gap-2 lg:flex">
+                            <button type="button" className="rounded-xl border border-[#d8d8d8] bg-white px-3 py-1.5 text-xs text-[#444]">⟲</button>
+                            <button type="button" className="rounded-xl border border-[#d8d8d8] bg-white px-3 py-1.5 text-xs text-[#444]">⟲</button>
+                            <button type="button" className="rounded-xl border border-[#d8d8d8] bg-white px-3 py-1.5 text-xs text-[#444]">100%</button>
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                            <span className="hidden rounded-full border border-[#d5d5d5] bg-white px-3 py-1 text-xs text-[#666] md:inline-flex">Single Creator</span>
+                            <button type="button" className="rounded-xl border border-[#d5d5d5] bg-white px-4 py-2 text-sm text-[#222]">
+                                Share
+                            </button>
+                        </div>
+                    </header>
+
+                    <div className="grid min-h-[calc(100vh-8.5rem)] grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)_320px]">
+                        <aside className="border-b border-[#dfdfdf] bg-[#f8f8f8] p-4 xl:border-b-0 xl:border-r">
+                            <h2 className="mb-1 text-sm font-semibold text-[#222]">Source Setup</h2>
+                            <p className="mb-4 text-xs text-[#777]">Start with a URL or upload your clip.</p>
+
+                            <div className="mb-4 grid grid-cols-2 gap-2 rounded-xl border border-[#dfdfdf] bg-[#efefef] p-1">
+                                <button
+                                    type="button"
+                                    onClick={() => setSourceMode("url")}
+                                    disabled={running}
+                                    className={`rounded-lg px-3 py-2 text-xs font-medium transition-colors ${
+                                        sourceMode === "url" ? "bg-white text-[#141414] shadow-sm" : "text-[#666] hover:text-[#1d1d1d]"
+                                    }`}
+                                >
+                                    URL
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setSourceMode("upload")}
+                                    disabled={running}
+                                    className={`rounded-lg px-3 py-2 text-xs font-medium transition-colors ${
+                                        sourceMode === "upload" ? "bg-white text-[#141414] shadow-sm" : "text-[#666] hover:text-[#1d1d1d]"
+                                    }`}
+                                >
+                                    Upload
+                                </button>
+                            </div>
+
+                            {sourceMode === "url" ? (
+                                <div className="space-y-2">
+                                    <label className="text-xs font-medium text-[#4f4f4f]">Video URL</label>
+                                    <input
+                                        value={videoUrl}
+                                        onChange={(e) => setVideoUrl(e.target.value)}
+                                        placeholder="https://www.youtube.com/watch?v=..."
+                                        className="w-full rounded-xl border border-[#d8d8d8] bg-white px-3 py-2 text-sm text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                        disabled={running}
+                                    />
+                                </div>
+                            ) : (
+                                <div className="space-y-2">
+                                    <label className="text-xs font-medium text-[#4f4f4f]">Upload Video</label>
+                                    <input
+                                        type="file"
+                                        accept="video/mp4,video/quicktime,video/webm,video/x-msvideo,video/x-matroska,.mp4,.mov,.m4v,.webm,.avi,.mkv"
+                                        onChange={(e) => setVideoFile(e.target.files?.[0] || null)}
+                                        className="w-full rounded-xl border border-[#d8d8d8] bg-white px-3 py-2 text-sm text-[#222] file:mr-2 file:rounded-md file:border-0 file:bg-[#ececec] file:px-3 file:py-1 file:text-[#303030]"
+                                        disabled={running}
+                                    />
+                                    <p className="text-[11px] text-[#7b7b7b]">Max 300MB • mp4, mov, m4v, webm, avi, mkv</p>
+                                </div>
+                            )}
+
+                            <div className="mt-6 rounded-2xl border border-[#dfdfdf] bg-white p-3">
+                                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#666]">Checklist</h3>
+                                <ul className="space-y-1 text-xs text-[#575757]">
+                                    <li>• Clear opening 3 seconds</li>
+                                    <li>• Single message per clip</li>
+                                    <li>• Strong visual movement</li>
+                                    <li>• End with a specific outcome</li>
+                                </ul>
+                            </div>
+                        </aside>
+
+                        <section className="border-b border-[#dfdfdf] bg-[#f2f2f2] px-4 py-4 md:px-6 xl:border-b-0">
+                            <div className="mb-4 flex items-center justify-center gap-2">
+                                <button type="button" className="rounded-lg border border-[#dbdbdb] bg-white px-3 py-1.5 text-xs text-[#545454]">⟵</button>
+                                <button type="button" className="rounded-lg border border-[#dbdbdb] bg-white px-3 py-1.5 text-xs text-[#545454]">⟶</button>
+                                <button type="button" className="rounded-lg border border-[#dbdbdb] bg-white px-3 py-1.5 text-xs text-[#545454]">Preview</button>
+                            </div>
+
+                            <div className="mx-auto flex max-w-4xl flex-col gap-5">
+                                <div className="relative min-h-[360px] rounded-[28px] border border-[#dcdcdc] bg-white p-8 shadow-[0_14px_40px_rgba(0,0,0,0.06)] md:min-h-[500px]">
+                                    <div className="absolute right-6 top-6 rounded-full border border-[#d9d9d9] bg-[#f7f7f7] px-3 py-1 text-[11px] text-[#666]">
+                                        {sourceMode === "url" ? "URL Mode" : "Upload Mode"}
+                                    </div>
+
+                                    <div className="mx-auto mt-8 max-w-xl text-center">
+                                        <div className="mb-4 text-5xl">🎬</div>
+                                        <h1 className="mb-2 text-2xl font-bold text-[#1f1f1f]">Performance Audit Workspace</h1>
+                                        <p className="text-sm leading-relaxed text-[#666]">
+                                            Upload a short/reel/tiktok/long-form video or paste a URL. We score likelihood using competitor benchmarks, platform quality signals, and a combined model.
+                                        </p>
+                                    </div>
+
+                                    <div className="mx-auto mt-8 max-w-2xl rounded-2xl border border-[#e0e0e0] bg-[#fafafa] p-4">
+                                        <p className="text-xs uppercase tracking-wide text-[#777]">Current Input</p>
+                                        <p className="mt-2 break-all text-sm text-[#252525]">
+                                            {sourceMode === "url"
+                                                ? (videoUrl.trim() || "No URL added yet")
+                                                : (videoFile?.name || "No file selected yet")}
+                                        </p>
+                                    </div>
+
+                                    {progressMessage && (
+                                        <div className="mx-auto mt-4 max-w-2xl rounded-xl border border-[#cbdacb] bg-[#edf7ed] px-4 py-3 text-sm text-[#2f5a2f]">
+                                            {progressMessage}
+                                        </div>
+                                    )}
+                                    {error && (
+                                        <div className="mx-auto mt-4 max-w-2xl rounded-xl border border-[#e3c4c4] bg-[#fff1f1] px-4 py-3 text-sm text-[#7f3a3a]">
+                                            {error}
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="rounded-2xl border border-[#dcdcdc] bg-white p-4 shadow-[0_10px_30px_rgba(0,0,0,0.05)]">
+                                    <div className="mb-2 flex items-center justify-between">
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-[#626262]">
+                                            Retention Points (Optional)
+                                        </label>
+                                        <span className="text-[11px] text-[#888]">JSON array · `{`{ time, retention }`}`</span>
+                                    </div>
+                                    <textarea
+                                        value={retentionJson}
+                                        onChange={(e) => setRetentionJson(e.target.value)}
+                                        placeholder='[{"time": 0, "retention": 100}, {"time": 5, "retention": 78}]'
+                                        className="min-h-[110px] w-full rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 font-mono text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
+                                        disabled={running}
+                                    />
+                                </div>
+                            </div>
+                        </section>
+
+                        <aside className="bg-[#f8f8f8] p-4 xl:border-l xl:border-[#dfdfdf]">
+                            <div className="rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                                <div className="mb-3 flex items-center justify-between">
+                                    <h2 className="text-sm font-semibold text-[#222]">Scoring Stack</h2>
+                                    <span className="rounded-full border border-[#dcdcdc] bg-[#f5f5f5] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[#666]">MVP</span>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <div className="rounded-xl border border-[#ececec] bg-[#fafafa] p-3">
+                                        <p className="text-xs text-[#757575]">Competitor Metrics</p>
+                                        <p className="mt-1 text-lg font-semibold text-[#232323]">Benchmark Match</p>
+                                    </div>
+                                    <div className="rounded-xl border border-[#ececec] bg-[#fafafa] p-3">
+                                        <p className="text-xs text-[#757575]">Platform Metrics</p>
+                                        <p className="mt-1 text-lg font-semibold text-[#232323]">Hook + Pacing Quality</p>
+                                    </div>
+                                    <div className="rounded-xl border border-[#ececec] bg-[#fafafa] p-3">
+                                        <p className="text-xs text-[#757575]">Combined Metrics</p>
+                                        <p className="mt-1 text-lg font-semibold text-[#232323]">Final Likelihood</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="mt-4 rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#676767]">Run Audit</h3>
+                                <p className="mb-3 text-xs text-[#6d6d6d]">
+                                    Uses competitor history + your video signals to produce three score sets.
+                                </p>
+                                <button
+                                    type="submit"
+                                    disabled={running}
+                                    className="w-full rounded-xl bg-[#1f1f1f] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#111] disabled:cursor-not-allowed disabled:bg-[#9e9e9e]"
+                                >
+                                    {running ? "Running Audit..." : "Run Audit"}
+                                </button>
+                            </div>
+
+                            <div className="mt-4 rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#676767]">Model Notes</h3>
+                                <ul className="space-y-1 text-xs text-[#666]">
+                                    <li>• Format-aware: shorts vs long videos</li>
+                                    <li>• Pulls tracked competitor baselines</li>
+                                    <li>• Falls back safely if data is missing</li>
+                                </ul>
+                            </div>
+                        </aside>
+                    </div>
                 </div>
-            </header>
-
-            <main className="max-w-3xl mx-auto">
-                <h1 className="text-3xl font-bold text-white mb-2">New Audit</h1>
-                <p className="text-gray-400 mb-8">Run a multimodal audit on a single video URL and get a consolidated report.</p>
-
-                <form className="space-y-6" onSubmit={handleRunAudit}>
-                    <div className="glass-card p-6">
-                        <h2 className="text-lg font-semibold text-white mb-4">1. Video URL</h2>
-                        <input
-                            value={videoUrl}
-                            onChange={(e) => setVideoUrl(e.target.value)}
-                            placeholder="https://www.youtube.com/watch?v=..."
-                            className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
-                            disabled={running}
-                        />
-                    </div>
-
-                    <div className="glass-card p-6">
-                        <h2 className="text-lg font-semibold text-white mb-4">2. Retention Data (Optional)</h2>
-                        <p className="text-gray-400 text-sm mb-4">
-                            Paste retention points if available. Example format:
-                            {" "}
-                            <code className="text-gray-300">[{`{"time":0,"retention":100}`}, {`{"time":5,"retention":78}`}]</code>
-                        </p>
-                        <textarea
-                            value={retentionJson}
-                            onChange={(e) => setRetentionJson(e.target.value)}
-                            placeholder='[{"time": 0, "retention": 100}, {"time": 5, "retention": 78}]'
-                            className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 min-h-[120px] font-mono text-sm"
-                            disabled={running}
-                        />
-                    </div>
-
-                    {error && (
-                        <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400">
-                            {error}
-                        </div>
-                    )}
-
-                    {progressMessage && (
-                        <div className="p-4 bg-purple-500/10 border border-purple-500/30 rounded-lg text-purple-300">
-                            {progressMessage}
-                        </div>
-                    )}
-
-                    <button
-                        type="submit"
-                        disabled={running}
-                        className="w-full py-4 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                        {running ? "Running Audit..." : "Run Audit"}
-                    </button>
-                </form>
-            </main>
+            </form>
         </div>
     );
 }
