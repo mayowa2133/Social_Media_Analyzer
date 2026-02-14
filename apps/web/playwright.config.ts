@@ -1,10 +1,13 @@
-import { defineConfig, devices } from "@playwright/test";
+import { defineConfig, devices, type ReporterDescription } from "@playwright/test";
 
 const PORT = process.env.PORT || "3100";
 const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || `http://localhost:${PORT}`;
 const BROWSER = process.env.PLAYWRIGHT_BROWSER || (process.env.CI ? "chromium" : "chrome");
 const IS_CHROME = BROWSER === "chrome";
-const CI_REPORTER = [["github"], ["html", { open: "never", outputFolder: "playwright-report" }]] as const;
+const CI_REPORTER: ReporterDescription[] = [
+    ["github"],
+    ["html", { open: "never", outputFolder: "playwright-report" }],
+];
 
 export default defineConfig({
     testDir: "./tests",

@@ -96,6 +96,70 @@ class YouTubeClient:
             return None
         except HttpError:
             return None
+
+    def search_channels(self, query: str, max_results: int = 10) -> List[Dict[str, Any]]:
+        """
+        Search channels by a niche/query and return enriched channel metrics.
+
+        Returns:
+            List of channel dicts with:
+            id, title, description, custom_url, thumbnail_url,
+            subscriber_count, video_count, view_count
+        """
+        query = (query or "").strip()
+        if not query:
+            return []
+
+        max_results = max(1, min(max_results, 50))
+
+        try:
+            response = self.youtube.search().list(
+                part="snippet",
+                q=query,
+                type="channel",
+                maxResults=max_results,
+            ).execute()
+
+            channel_ids: List[str] = []
+            for item in response.get("items", []):
+                channel_id = item.get("snippet", {}).get("channelId") or item.get("id", {}).get("channelId")
+                if channel_id and channel_id not in channel_ids:
+                    channel_ids.append(channel_id)
+
+            if not channel_ids:
+                return []
+
+            details: Dict[str, Dict[str, Any]] = {}
+            for i in range(0, len(channel_ids), 50):
+                batch = channel_ids[i:i + 50]
+                detail_response = self.youtube.channels().list(
+                    part="snippet,statistics",
+                    id=",".join(batch),
+                ).execute()
+
+                for item in detail_response.get("items", []):
+                    snippet = item.get("snippet", {})
+                    stats = item.get("statistics", {})
+                    details[item["id"]] = {
+                        "id": item["id"],
+                        "title": snippet.get("title", ""),
+                        "description": snippet.get("description", ""),
+                        "custom_url": snippet.get("customUrl", ""),
+                        "thumbnail_url": snippet.get("thumbnails", {}).get("high", {}).get("url", ""),
+                        "subscriber_count": int(stats.get("subscriberCount", 0)),
+                        "video_count": int(stats.get("videoCount", 0)),
+                        "view_count": int(stats.get("viewCount", 0)),
+                    }
+
+            channels = [details[cid] for cid in channel_ids if cid in details]
+            channels.sort(
+                key=lambda c: (c.get("subscriber_count", 0), c.get("view_count", 0)),
+                reverse=True,
+            )
+            return channels[:max_results]
+        except HttpError as e:
+            print(f"Error searching channels for query '{query}': {e}")
+            return []
     
     def get_channel_info(self, channel_id: str) -> Optional[Dict[str, Any]]:
         """

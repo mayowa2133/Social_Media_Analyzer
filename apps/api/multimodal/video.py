@@ -72,3 +72,24 @@ def extract_frames(video_path: str, output_dir: str, interval: int = 5) -> list[
     except ffmpeg.Error as e:
         logger.error(f"Error extracting frames: {e.stderr.decode() if e.stderr else str(e)}")
         raise
+
+
+def get_video_duration_seconds(video_path: str) -> int:
+    """
+    Probe video metadata and return duration in whole seconds.
+    """
+    try:
+        probe = ffmpeg.probe(video_path)
+        fmt = probe.get("format", {})
+        duration = float(fmt.get("duration", 0.0) or 0.0)
+        if duration <= 0:
+            streams = probe.get("streams", [])
+            for stream in streams:
+                if stream.get("codec_type") == "video":
+                    duration = float(stream.get("duration", 0.0) or 0.0)
+                    if duration > 0:
+                        break
+        return max(0, int(round(duration)))
+    except Exception as e:
+        logger.warning(f"Could not probe video duration for {video_path}: {e}")
+        return 0

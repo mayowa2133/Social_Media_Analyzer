@@ -1,9 +1,6 @@
 import type { Metadata } from "next";
-import { Manrope } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/providers";
-
-const manrope = Manrope({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
     title: "Social Performance Coach",
@@ -17,7 +14,7 @@ export default function RootLayout({
 }>) {
     return (
         <html lang="en" className="dark">
-            <body className={manrope.className}>
+            <body>
                 <Providers>
                     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900">
                         {children}

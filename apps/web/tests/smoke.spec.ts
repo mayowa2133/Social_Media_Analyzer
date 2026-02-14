@@ -52,6 +52,30 @@ async function installApiMocks(page: Page) {
             return;
         }
 
+        if (method === "POST" && path === "/competitors/recommend") {
+            await json(200, {
+                niche: "Mock Competitor Channel",
+                page: 1,
+                limit: 8,
+                total_count: 1,
+                has_more: false,
+                recommendations: [
+                    {
+                        channel_id: "UC_SUGGESTED_1",
+                        title: "Suggested Channel One",
+                        custom_url: "@suggestedone",
+                        subscriber_count: 456789,
+                        video_count: 320,
+                        view_count: 25400000,
+                        avg_views_per_video: 79375,
+                        thumbnail_url: "https://example.com/suggested1.jpg",
+                        already_tracked: false,
+                    },
+                ],
+            });
+            return;
+        }
+
         if (method === "POST" && path === "/audit/run_multimodal") {
             await json(200, {
                 audit_id: MOCK_AUDIT_ID,
@@ -97,6 +121,78 @@ async function installApiMocks(page: Page) {
                     gap_analysis: ["Gap 1"],
                     content_pillars: ["Pillar 1"],
                     video_ideas: [{ title: "Idea 1", concept: "Concept 1" }],
+                    hook_intelligence: {
+                        summary: "Top competitors consistently use question hooks and how-to framing.",
+                        format_definition: "short_form <= 60s, long_form > 60s",
+                        common_patterns: [
+                            {
+                                pattern: "Question Hook",
+                                frequency: 6,
+                                competitor_count: 3,
+                                avg_views: 182000,
+                                examples: ["Why your shorts stop getting views", "What kills retention in long-form?"],
+                                template: "Why [specific pain point] is holding back your [desired outcome]",
+                            },
+                        ],
+                        recommended_hooks: [
+                            "Why [specific pain point] is holding back your [desired outcome]",
+                            "How to [achieve outcome] without [common frustration]",
+                        ],
+                        competitor_examples: [
+                            {
+                                competitor: "Mock Competitor Channel",
+                                hooks: ["Why your shorts stop getting views"],
+                            },
+                        ],
+                        format_breakdown: {
+                            short_form: {
+                                format: "short_form",
+                                label: "Short-form (<= 60s)",
+                                video_count: 7,
+                                summary: "Short-form winner pattern: Question Hook.",
+                                common_patterns: [
+                                    {
+                                        pattern: "Question Hook",
+                                        frequency: 4,
+                                        competitor_count: 3,
+                                        avg_views: 221000,
+                                        examples: ["Why your shorts stop getting views"],
+                                        template: "Why [specific pain point] is holding back your [desired outcome]",
+                                    },
+                                ],
+                                recommended_hooks: ["Why [specific pain point] is holding back your [desired outcome]"],
+                                competitor_examples: [
+                                    {
+                                        competitor: "Mock Competitor Channel",
+                                        hooks: ["Why your shorts stop getting views"],
+                                    },
+                                ],
+                            },
+                            long_form: {
+                                format: "long_form",
+                                label: "Long-form (> 60s)",
+                                video_count: 5,
+                                summary: "Long-form winner pattern: How-To Hook.",
+                                common_patterns: [
+                                    {
+                                        pattern: "How-To Hook",
+                                        frequency: 3,
+                                        competitor_count: 2,
+                                        avg_views: 140000,
+                                        examples: ["How to keep retention high in 10-minute videos"],
+                                        template: "How to [achieve outcome] without [common frustration]",
+                                    },
+                                ],
+                                recommended_hooks: ["How to [achieve outcome] without [common frustration]"],
+                                competitor_examples: [
+                                    {
+                                        competitor: "Mock Competitor Channel",
+                                        hooks: ["How to keep retention high in 10-minute videos"],
+                                    },
+                                ],
+                            },
+                        },
+                    },
                 },
                 recommendations: [
                     "Lead with a clearer value proposition in the first 5 seconds.",
@@ -131,4 +227,10 @@ test("connect -> competitors -> audit -> report smoke flow", async ({ page }) =>
     await expect(page.getByText(/82\/100/)).toBeVisible();
     await expect(page.getByRole("heading", { name: "Executive Recommendations" })).toBeVisible();
     await expect(page.getByText("Lead with a clearer value proposition in the first 5 seconds.")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Competitor Hook Intelligence" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Format-Aware Hook Rankings" })).toBeVisible();
+    await expect(page.getByText("Short-form (<= 60s)")).toBeVisible();
+    await expect(page.getByText("Long-form (> 60s)")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Ready-to-Use Hook Templates" })).toBeVisible();
+    await expect(page.getByText("Why [specific pain point] is holding back your [desired outcome]").first()).toBeVisible();
 });

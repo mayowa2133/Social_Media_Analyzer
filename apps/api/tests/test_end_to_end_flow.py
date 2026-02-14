@@ -175,3 +175,18 @@ async def test_connect_competitor_diagnose_blueprint_report(integration_client):
         assert isinstance(report["recommendations"], list)
         assert len(report["recommendations"]) > 0
         assert "blueprint" in report
+        hook_intelligence = report["blueprint"].get("hook_intelligence", {})
+        assert isinstance(hook_intelligence.get("summary"), str)
+        assert hook_intelligence["summary"]
+        assert isinstance(hook_intelligence.get("common_patterns"), list)
+        assert len(hook_intelligence["common_patterns"]) > 0
+        assert isinstance(hook_intelligence.get("recommended_hooks"), list)
+        assert len(hook_intelligence["recommended_hooks"]) > 0
+        assert isinstance(hook_intelligence.get("competitor_examples"), list)
+        assert isinstance(hook_intelligence.get("format_definition"), str)
+        assert "short_form" in hook_intelligence["format_definition"]
+        format_breakdown = hook_intelligence.get("format_breakdown", {})
+        assert "short_form" in format_breakdown
+        assert "long_form" in format_breakdown
+        assert isinstance(format_breakdown["short_form"].get("recommended_hooks"), list)
+        assert isinstance(format_breakdown["long_form"].get("recommended_hooks"), list)

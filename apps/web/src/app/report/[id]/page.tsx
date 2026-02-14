@@ -92,6 +92,81 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                                     Format: {report.performance_prediction.format_type.replace("_", "-")} · Duration: {report.performance_prediction.duration_seconds}s · Competitor benchmark samples: {report.performance_prediction.competitor_metrics.benchmark.sample_size}
                                 </p>
                             </div>
+
+                            {report.performance_prediction.platform_metrics.detectors && (
+                                <div className="mt-4 rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                                    <h3 className="mb-3 text-sm font-semibold text-[#222]">Creator Engineering Signals</h3>
+                                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                                        <div className="rounded-xl border border-[#e4e4e4] bg-[#fafafa] p-3">
+                                            <p className="text-[11px] uppercase tracking-wide text-[#777]">Time to Value</p>
+                                            <p className="mt-1 text-lg font-semibold text-[#202020]">{report.performance_prediction.platform_metrics.detectors.time_to_value.seconds}s</p>
+                                            <p className="text-[11px] text-[#666]">{report.performance_prediction.platform_metrics.detectors.time_to_value.assessment}</p>
+                                        </div>
+                                        <div className="rounded-xl border border-[#e4e4e4] bg-[#fafafa] p-3">
+                                            <p className="text-[11px] uppercase tracking-wide text-[#777]">Open Loops</p>
+                                            <p className="mt-1 text-lg font-semibold text-[#202020]">{report.performance_prediction.platform_metrics.detectors.open_loops.count}</p>
+                                            <p className="text-[11px] text-[#666]">Score {Math.round(report.performance_prediction.platform_metrics.detectors.open_loops.score)}</p>
+                                        </div>
+                                        <div className="rounded-xl border border-[#e4e4e4] bg-[#fafafa] p-3">
+                                            <p className="text-[11px] uppercase tracking-wide text-[#777]">Dead Zones</p>
+                                            <p className="mt-1 text-lg font-semibold text-[#202020]">{report.performance_prediction.platform_metrics.detectors.dead_zones.count}</p>
+                                            <p className="text-[11px] text-[#666]">{Math.round(report.performance_prediction.platform_metrics.detectors.dead_zones.total_seconds)}s total</p>
+                                        </div>
+                                        <div className="rounded-xl border border-[#e4e4e4] bg-[#fafafa] p-3">
+                                            <p className="text-[11px] uppercase tracking-wide text-[#777]">Interrupts / Min</p>
+                                            <p className="mt-1 text-lg font-semibold text-[#202020]">{report.performance_prediction.platform_metrics.detectors.pattern_interrupts.interrupts_per_minute}</p>
+                                            <p className="text-[11px] text-[#666]">{report.performance_prediction.platform_metrics.detectors.pattern_interrupts.assessment}</p>
+                                        </div>
+                                        <div className="rounded-xl border border-[#e4e4e4] bg-[#fafafa] p-3">
+                                            <p className="text-[11px] uppercase tracking-wide text-[#777]">CTA Style</p>
+                                            <p className="mt-1 text-sm font-semibold text-[#202020]">
+                                                {report.performance_prediction.platform_metrics.detectors.cta_style.style.replace("_", " ")}
+                                            </p>
+                                            <p className="text-[11px] text-[#666]">Score {Math.round(report.performance_prediction.platform_metrics.detectors.cta_style.score)}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {report.performance_prediction.platform_metrics.metric_coverage && (
+                                <div className="mt-4 rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                                    <h3 className="mb-2 text-sm font-semibold text-[#222]">Metric Coverage</h3>
+                                    <p className="text-xs text-[#666]">
+                                        Shares: {report.performance_prediction.platform_metrics.metric_coverage.shares} · Saves: {report.performance_prediction.platform_metrics.metric_coverage.saves} · Retention Curve: {report.performance_prediction.platform_metrics.metric_coverage.retention_curve}
+                                    </p>
+                                    {!!report.performance_prediction.platform_metrics.true_metric_notes?.length && (
+                                        <ul className="mt-2 space-y-1 text-xs text-[#666]">
+                                            {report.performance_prediction.platform_metrics.true_metric_notes.map((note, idx) => (
+                                                <li key={idx}>• {note}</li>
+                                            ))}
+                                        </ul>
+                                    )}
+                                </div>
+                            )}
+
+                            {report.performance_prediction.repurpose_plan && (
+                                <div className="mt-4 rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                                    <h3 className="mb-3 text-sm font-semibold text-[#222]">Repurpose Plan</h3>
+                                    <p className="mb-3 text-xs text-[#666]">{report.performance_prediction.repurpose_plan.core_thesis}</p>
+                                    <div className="grid gap-3 md:grid-cols-3">
+                                        <div className="rounded-xl border border-[#e4e4e4] bg-[#fafafa] p-3">
+                                            <p className="text-xs font-semibold text-[#202020]">YouTube Shorts</p>
+                                            <p className="mt-1 text-[11px] text-[#666]">Target: {report.performance_prediction.repurpose_plan.youtube_shorts.target_duration_s}s · Hook by {report.performance_prediction.repurpose_plan.youtube_shorts.hook_deadline_s}s</p>
+                                            <p className="mt-1 text-[11px] text-[#666]">{report.performance_prediction.repurpose_plan.youtube_shorts.editing_style}</p>
+                                        </div>
+                                        <div className="rounded-xl border border-[#e4e4e4] bg-[#fafafa] p-3">
+                                            <p className="text-xs font-semibold text-[#202020]">Instagram Reels</p>
+                                            <p className="mt-1 text-[11px] text-[#666]">Target: {report.performance_prediction.repurpose_plan.instagram_reels.target_duration_s}s · Hook by {report.performance_prediction.repurpose_plan.instagram_reels.hook_deadline_s}s</p>
+                                            <p className="mt-1 text-[11px] text-[#666]">{report.performance_prediction.repurpose_plan.instagram_reels.editing_style}</p>
+                                        </div>
+                                        <div className="rounded-xl border border-[#e4e4e4] bg-[#fafafa] p-3">
+                                            <p className="text-xs font-semibold text-[#202020]">TikTok</p>
+                                            <p className="mt-1 text-[11px] text-[#666]">Target: {report.performance_prediction.repurpose_plan.tiktok.target_duration_s}s · Hook by {report.performance_prediction.repurpose_plan.tiktok.hook_deadline_s}s</p>
+                                            <p className="mt-1 text-[11px] text-[#666]">{report.performance_prediction.repurpose_plan.tiktok.editing_style}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
                         </section>
                     )}
 

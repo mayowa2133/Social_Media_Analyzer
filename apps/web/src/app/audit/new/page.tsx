@@ -24,6 +24,7 @@ export default function NewAuditPage() {
     const [videoUrl, setVideoUrl] = useState("");
     const [videoFile, setVideoFile] = useState<File | null>(null);
     const [retentionJson, setRetentionJson] = useState("");
+    const [platformMetricsJson, setPlatformMetricsJson] = useState("");
     const [running, setRunning] = useState(false);
     const [progressMessage, setProgressMessage] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -64,6 +65,18 @@ export default function NewAuditPage() {
         }
 
         let retentionPoints: RetentionPoint[] | undefined;
+        let platformMetrics:
+            | {
+                  views?: number;
+                  likes?: number;
+                  comments?: number;
+                  shares?: number;
+                  saves?: number;
+                  watch_time_hours?: number;
+                  avg_view_duration_s?: number;
+                  ctr?: number;
+              }
+            | undefined;
         if (retentionJson.trim()) {
             try {
                 const parsed = JSON.parse(retentionJson);
@@ -73,6 +86,18 @@ export default function NewAuditPage() {
                 retentionPoints = parsed;
             } catch (err: any) {
                 setError(err.message || "Invalid retention JSON.");
+                return;
+            }
+        }
+        if (platformMetricsJson.trim()) {
+            try {
+                const parsed = JSON.parse(platformMetricsJson);
+                if (Array.isArray(parsed) || typeof parsed !== "object" || parsed === null) {
+                    throw new Error("Platform metrics JSON must be an object.");
+                }
+                platformMetrics = parsed;
+            } catch (err: any) {
+                setError(err.message || "Invalid platform metrics JSON.");
                 return;
             }
         }
@@ -88,6 +113,7 @@ export default function NewAuditPage() {
                     source_mode: "upload",
                     upload_id: upload.upload_id,
                     retention_points: retentionPoints,
+                    platform_metrics: platformMetrics,
                     user_id: userId,
                 });
             } else {
@@ -95,6 +121,7 @@ export default function NewAuditPage() {
                     source_mode: "url",
                     video_url: videoUrl.trim(),
                     retention_points: retentionPoints,
+                    platform_metrics: platformMetrics,
                     user_id: userId,
                 });
             }
@@ -270,6 +297,22 @@ export default function NewAuditPage() {
                                         value={retentionJson}
                                         onChange={(e) => setRetentionJson(e.target.value)}
                                         placeholder='[{"time": 0, "retention": 100}, {"time": 5, "retention": 78}]'
+                                        className="min-h-[110px] w-full rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 font-mono text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
+                                        disabled={running}
+                                    />
+                                </div>
+
+                                <div className="rounded-2xl border border-[#dcdcdc] bg-white p-4 shadow-[0_10px_30px_rgba(0,0,0,0.05)]">
+                                    <div className="mb-2 flex items-center justify-between">
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-[#626262]">
+                                            Platform Metrics (Optional)
+                                        </label>
+                                        <span className="text-[11px] text-[#888]">JSON object</span>
+                                    </div>
+                                    <textarea
+                                        value={platformMetricsJson}
+                                        onChange={(e) => setPlatformMetricsJson(e.target.value)}
+                                        placeholder='{"views": 120000, "likes": 4600, "comments": 320, "shares": 210, "saves": 580, "avg_view_duration_s": 27.5, "ctr": 0.068}'
                                         className="min-h-[110px] w-full rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 font-mono text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
                                         disabled={running}
                                     />

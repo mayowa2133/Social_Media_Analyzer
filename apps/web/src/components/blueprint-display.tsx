@@ -163,6 +163,135 @@ export function BlueprintDisplay({ blueprint, loading }: BlueprintDisplayProps) 
                 </div>
             )}
 
+            {blueprint.winner_pattern_signals && (
+                <div className="rounded-2xl border border-[#dcdcdc] bg-white p-6">
+                    <h3 className="mb-2 flex items-center gap-2 text-xl font-bold text-[#232323]">
+                        <span>📈</span> Winner Pattern Signals
+                    </h3>
+                    <p className="mb-4 text-sm text-[#666]">{blueprint.winner_pattern_signals.summary}</p>
+                    <p className="mb-4 text-xs text-[#707070]">
+                        Sample size: {blueprint.winner_pattern_signals.sample_size} videos · Hook/velocity correlation: {blueprint.winner_pattern_signals.hook_velocity_correlation}
+                    </p>
+
+                    {blueprint.winner_pattern_signals.top_topics_by_velocity.length > 0 && (
+                        <div className="mb-4">
+                            <h4 className="mb-2 text-sm font-semibold text-[#2d2d2d]">Top Topics by Views/Day</h4>
+                            <div className="grid gap-2 md:grid-cols-2">
+                                {blueprint.winner_pattern_signals.top_topics_by_velocity.slice(0, 6).map((topic, idx) => (
+                                    <div key={idx} className="rounded-lg border border-[#e1e1e1] bg-[#fafafa] p-3">
+                                        <p className="text-xs font-semibold text-[#202020]">{topic.topic}</p>
+                                        <p className="text-[11px] text-[#666]">{topic.count} videos · {topic.avg_views_per_day.toLocaleString()} views/day</p>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {blueprint.winner_pattern_signals.top_videos_by_velocity.length > 0 && (
+                        <div>
+                            <h4 className="mb-2 text-sm font-semibold text-[#2d2d2d]">Top Velocity Videos</h4>
+                            <div className="space-y-2">
+                                {blueprint.winner_pattern_signals.top_videos_by_velocity.slice(0, 5).map((video, idx) => (
+                                    <div key={idx} className="rounded-lg border border-[#e1e1e1] bg-[#fafafa] p-3">
+                                        <p className="text-xs font-semibold text-[#202020]">{video.title}</p>
+                                        <p className="text-[11px] text-[#666]">
+                                            {video.channel} · {video.views.toLocaleString()} views · {video.views_per_day.toLocaleString()} views/day · {video.hook_pattern}
+                                        </p>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {blueprint.framework_playbook && (
+                <div className="rounded-2xl border border-[#dcdcdc] bg-white p-6">
+                    <h3 className="mb-2 flex items-center gap-2 text-xl font-bold text-[#232323]">
+                        <span>🧩</span> Framework Playbook
+                    </h3>
+                    <p className="mb-4 text-sm text-[#666]">{blueprint.framework_playbook.summary}</p>
+                    <div className="mb-4 grid gap-2 md:grid-cols-4">
+                        <div className="rounded-lg border border-[#e1e1e1] bg-[#fafafa] p-3 text-center">
+                            <p className="text-[11px] text-[#777]">Authority Hook</p>
+                            <p className="text-sm font-semibold text-[#202020]">{Math.round(blueprint.framework_playbook.stage_adoption.authority_hook * 100)}%</p>
+                        </div>
+                        <div className="rounded-lg border border-[#e1e1e1] bg-[#fafafa] p-3 text-center">
+                            <p className="text-[11px] text-[#777]">Fast Proof</p>
+                            <p className="text-sm font-semibold text-[#202020]">{Math.round(blueprint.framework_playbook.stage_adoption.fast_proof * 100)}%</p>
+                        </div>
+                        <div className="rounded-lg border border-[#e1e1e1] bg-[#fafafa] p-3 text-center">
+                            <p className="text-[11px] text-[#777]">Framework Steps</p>
+                            <p className="text-sm font-semibold text-[#202020]">{Math.round(blueprint.framework_playbook.stage_adoption.framework_steps * 100)}%</p>
+                        </div>
+                        <div className="rounded-lg border border-[#e1e1e1] bg-[#fafafa] p-3 text-center">
+                            <p className="text-[11px] text-[#777]">Open Loops</p>
+                            <p className="text-sm font-semibold text-[#202020]">{Math.round(blueprint.framework_playbook.stage_adoption.open_loop * 100)}%</p>
+                        </div>
+                    </div>
+
+                    {Object.keys(blueprint.framework_playbook.cta_distribution).length > 0 && (
+                        <div className="mb-3">
+                            <h4 className="mb-2 text-sm font-semibold text-[#2d2d2d]">CTA Distribution</h4>
+                            <div className="flex flex-wrap gap-2">
+                                {Object.entries(blueprint.framework_playbook.cta_distribution).map(([style, count]) => (
+                                    <span key={style} className="rounded-full border border-[#dfdfdf] bg-[#f6f6f6] px-2 py-1 text-[11px] text-[#555]">
+                                        {style.replace("_", " ")}: {count}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {blueprint.framework_playbook.execution_notes.length > 0 && (
+                        <ul className="space-y-1 text-xs text-[#666]">
+                            {blueprint.framework_playbook.execution_notes.map((note, idx) => (
+                                <li key={idx}>• {note}</li>
+                            ))}
+                        </ul>
+                    )}
+                </div>
+            )}
+
+            {blueprint.repurpose_plan && (
+                <div className="rounded-2xl border border-[#dcdcdc] bg-white p-6">
+                    <h3 className="mb-2 flex items-center gap-2 text-xl font-bold text-[#232323]">
+                        <span>🔁</span> Cross-Platform Repurpose Plan
+                    </h3>
+                    <p className="mb-2 text-sm text-[#666]">{blueprint.repurpose_plan.summary}</p>
+                    <p className="mb-4 text-xs text-[#707070]">{blueprint.repurpose_plan.core_angle}</p>
+                    <div className="grid gap-3 md:grid-cols-3">
+                        <div className="rounded-lg border border-[#e1e1e1] bg-[#fafafa] p-3">
+                            <p className="text-xs font-semibold text-[#202020]">YouTube Shorts ({blueprint.repurpose_plan.youtube_shorts.duration_target_s}s)</p>
+                            <p className="mt-1 text-[11px] text-[#666]">Hook: {blueprint.repurpose_plan.youtube_shorts.hook_template}</p>
+                            <ul className="mt-1 space-y-1 text-[11px] text-[#666]">
+                                {blueprint.repurpose_plan.youtube_shorts.edit_directives.map((item, idx) => (
+                                    <li key={idx}>• {item}</li>
+                                ))}
+                            </ul>
+                        </div>
+                        <div className="rounded-lg border border-[#e1e1e1] bg-[#fafafa] p-3">
+                            <p className="text-xs font-semibold text-[#202020]">Instagram Reels ({blueprint.repurpose_plan.instagram_reels.duration_target_s}s)</p>
+                            <p className="mt-1 text-[11px] text-[#666]">Hook: {blueprint.repurpose_plan.instagram_reels.hook_template}</p>
+                            <ul className="mt-1 space-y-1 text-[11px] text-[#666]">
+                                {blueprint.repurpose_plan.instagram_reels.edit_directives.map((item, idx) => (
+                                    <li key={idx}>• {item}</li>
+                                ))}
+                            </ul>
+                        </div>
+                        <div className="rounded-lg border border-[#e1e1e1] bg-[#fafafa] p-3">
+                            <p className="text-xs font-semibold text-[#202020]">TikTok ({blueprint.repurpose_plan.tiktok.duration_target_s}s)</p>
+                            <p className="mt-1 text-[11px] text-[#666]">Hook: {blueprint.repurpose_plan.tiktok.hook_template}</p>
+                            <ul className="mt-1 space-y-1 text-[11px] text-[#666]">
+                                {blueprint.repurpose_plan.tiktok.edit_directives.map((item, idx) => (
+                                    <li key={idx}>• {item}</li>
+                                ))}
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             <div>
                 <h3 className="mb-6 flex items-center gap-2 text-xl font-bold text-[#222]">
                     <span>💡</span> Video Blueprint Ideas

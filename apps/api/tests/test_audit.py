@@ -31,6 +31,8 @@ async def test_process_video_audit_success():
          patch("services.audit.extract_audio", return_value="/tmp/test_aud.mp3") as mock_extract_audio, \
          patch("services.audit.transcribe_audio", return_value={"text": "test transcript"}) as mock_transcribe, \
          patch("services.audit.analyze_content") as mock_analyze, \
+         patch("services.audit._build_performance_prediction", new=AsyncMock(return_value={"combined_metrics": {"score": 72}})), \
+         patch("services.audit.get_video_duration_seconds", return_value=45), \
          patch("services.audit.os.makedirs"), \
          patch("services.audit.shutil.rmtree"):
          
@@ -52,7 +54,9 @@ async def test_process_video_audit_success():
          # Check final status
          assert mock_audit.status == "completed"
          assert mock_audit.progress == "100"
-         assert mock_audit.output_json == {"overall_score": 10, "summary": "Great"}
+         assert mock_audit.output_json["video_analysis"] == {"overall_score": 10, "summary": "Great"}
+         assert "explicit_detectors" in mock_audit.output_json
+         assert mock_audit.output_json["performance_prediction"]["combined_metrics"]["score"] == 72
          assert mock_db.commit.call_count >= 1
 
 @pytest.mark.asyncio

@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     
     # OpenAI
     OPENAI_API_KEY: str = ""
+    AUDIT_UPLOAD_DIR: str = "/tmp/spc_uploads"
     
     # Feature Flags
     ENABLE_TIKTOK_CONNECTORS: bool = False

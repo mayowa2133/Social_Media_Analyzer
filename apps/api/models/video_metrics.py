@@ -19,6 +19,7 @@ class VideoMetrics(Base):
     likes = Column(Integer, default=0)
     comments = Column(Integer, default=0)
     shares = Column(Integer, default=0)
+    saves = Column(Integer, default=0)
     watch_time_hours = Column(Float, nullable=True)  # YouTube Analytics
     avg_view_duration_s = Column(Float, nullable=True)  # YouTube Analytics
     ctr = Column(Float, nullable=True)  # Click-through rate (YouTube Analytics)

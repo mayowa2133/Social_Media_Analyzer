@@ -117,3 +117,85 @@ def test_clustering(mock_channel_data):
     
     topics = {c["topic"] for c in clusters}
     assert "minecraft" in topics
+
+
+def test_winner_patterns_and_format_split(mock_channel_data):
+    base_date = datetime.now()
+    videos = [
+        {
+            "id": "short_winner_1",
+            "title": "Why 3 AI Mistakes Kill Your Growth?",
+            "published_at": (base_date - timedelta(days=1)).isoformat(),
+            "view_count": 12000,
+            "like_count": 900,
+            "comment_count": 140,
+            "duration_seconds": 45,
+        },
+        {
+            "id": "short_winner_2",
+            "title": "The Secret Hook Formula in 30 Seconds",
+            "published_at": (base_date - timedelta(days=2)).isoformat(),
+            "view_count": 10000,
+            "like_count": 750,
+            "comment_count": 120,
+            "duration_seconds": 50,
+        },
+        {
+            "id": "long_baseline_1",
+            "title": "Weekly channel update",
+            "published_at": (base_date - timedelta(days=3)).isoformat(),
+            "view_count": 2200,
+            "like_count": 70,
+            "comment_count": 8,
+            "duration_seconds": 720,
+        },
+        {
+            "id": "long_baseline_2",
+            "title": "Building in public day 17",
+            "published_at": (base_date - timedelta(days=4)).isoformat(),
+            "view_count": 2000,
+            "like_count": 65,
+            "comment_count": 7,
+            "duration_seconds": 680,
+        },
+        {
+            "id": "long_baseline_3",
+            "title": "My story from idea to launch",
+            "published_at": (base_date - timedelta(days=5)).isoformat(),
+            "view_count": 2500,
+            "like_count": 90,
+            "comment_count": 12,
+            "duration_seconds": 840,
+        },
+    ]
+    analyzer = ChannelAnalyzer(mock_channel_data, videos)
+    analysis = analyzer.analyze()
+
+    winner = analysis.metrics["winner_analysis"]
+    formats = analysis.metrics["format_breakdown"]
+    signals = analysis.metrics["social_signal_summary"]
+    scorecards = analysis.metrics["video_scorecards"]
+    playbook = analysis.metrics["strategy_playbook"]
+
+    assert winner["winner_count"] >= 1
+    assert winner["winner_avg_views"] > winner["baseline_avg_views"]
+    assert winner["winner_hook_signal_rate"] >= winner["baseline_hook_signal_rate"]
+    assert "top_videos" in winner and len(winner["top_videos"]) >= 1
+
+    assert formats["short_form"]["count"] == 2
+    assert formats["long_form"]["count"] == 3
+    assert formats["short_form"]["avg_views"] > formats["long_form"]["avg_views"]
+    assert formats["dominant_format"] == "short_form"
+
+    assert signals["likes"]["avg_rate"] > 0
+    assert signals["comments"]["avg_rate"] > 0
+    assert signals["shares"]["avg_proxy"] > 0
+    assert signals["saves"]["avg_proxy"] > 0
+    assert signals["metric_coverage"]["shares"] == "proxy"
+
+    assert len(scorecards) == 5
+    assert scorecards[0]["performance_tier"] in {"winner", "above_average"}
+    assert scorecards[0]["algorithm_value_score"] > 0
+    assert isinstance(scorecards[0]["hypothesis"], str) and len(scorecards[0]["hypothesis"]) > 0
+
+    assert len(playbook) > 0

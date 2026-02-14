@@ -73,6 +73,28 @@ def mock_youtube_client():
                 "duration_seconds": 120
             }
         }
+
+        # Mock search_channels for recommendation endpoint
+        client.search_channels.return_value = [
+            {
+                "id": "UC_EXISTING_CHANNEL",
+                "title": "Existing Tracked Channel",
+                "custom_url": "@existing",
+                "thumbnail_url": "http://example.com/existing.jpg",
+                "subscriber_count": 500000,
+                "video_count": 250,
+                "view_count": 50000000,
+            },
+            {
+                "id": "UC_SUGGESTED_CHANNEL",
+                "title": "Suggested Channel",
+                "custom_url": "@suggested",
+                "thumbnail_url": "http://example.com/suggested.jpg",
+                "subscriber_count": 250000,
+                "video_count": 180,
+                "view_count": 18000000,
+            },
+        ]
         
         mock_youtube.return_value = client
         mock_competitor.return_value = client
@@ -144,3 +166,78 @@ async def test_get_channel_videos(client, mock_youtube_client):
     assert len(data) == 2
     assert data[0]["title"] == "Test Video 1"
     assert data[0]["view_count"] == 100
+
+
+@pytest.mark.asyncio
+async def test_recommend_competitors(client, mock_youtube_client):
+    """Test recommending competitors from niche search."""
+    class _Scalars:
+        def __init__(self, values):
+            self._values = values
+
+        def all(self):
+            return self._values
+
+    class _Result:
+        def __init__(self, scalar_value=None, scalar_values=None):
+            self._scalar_value = scalar_value
+            self._scalar_values = scalar_values or []
+
+        def scalar_one_or_none(self):
+            return self._scalar_value
+
+        def scalars(self):
+            return _Scalars(self._scalar_values)
+
+    mock_db = MagicMock()
+    mock_db.execute = AsyncMock(return_value=_Result(scalar_values=["UC_EXISTING_CHANNEL"]))
+
+    async def override_get_db():
+        yield mock_db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = await client.post(
+            "/competitors/recommend",
+            json={
+                "niche": "AI News",
+                "user_id": "test-user",
+                "limit": 1,
+                "page": 1,
+                "sort_by": "avg_views_per_video",
+                "sort_direction": "asc",
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["niche"] == "AI News"
+        assert data["page"] == 1
+        assert data["limit"] == 1
+        assert data["total_count"] == 2
+        assert data["has_more"] is True
+        assert len(data["recommendations"]) == 1
+        assert data["recommendations"][0]["channel_id"] == "UC_SUGGESTED_CHANNEL"
+        assert data["recommendations"][0]["already_tracked"] is False
+
+        response = await client.post(
+            "/competitors/recommend",
+            json={
+                "niche": "AI News",
+                "user_id": "test-user",
+                "limit": 1,
+                "page": 2,
+                "sort_by": "avg_views_per_video",
+                "sort_direction": "asc",
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["page"] == 2
+        assert data["limit"] == 1
+        assert data["total_count"] == 2
+        assert data["has_more"] is False
+        assert len(data["recommendations"]) == 1
+        assert data["recommendations"][0]["channel_id"] == "UC_EXISTING_CHANNEL"
+        assert data["recommendations"][0]["already_tracked"] is True
+    finally:
+        app.dependency_overrides.pop(get_db, None)

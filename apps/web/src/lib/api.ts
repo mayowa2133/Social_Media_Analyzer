@@ -59,6 +59,31 @@ async function fetchApi<T>(endpoint: string, options: ApiOptions = {}): Promise<
     return response.json();
 }
 
+async function fetchFormApi<T>(
+    endpoint: string,
+    formData: FormData,
+    options: { accessToken?: string } = {}
+): Promise<T> {
+    const headers: Record<string, string> = {};
+    if (options.accessToken) {
+        headers.Authorization = `Bearer ${options.accessToken}`;
+    }
+
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+        method: "POST",
+        headers,
+        body: formData,
+        cache: "no-store",
+    });
+
+    if (!response.ok) {
+        const error = await response.text();
+        throw new Error(error || `API error: ${response.status}`);
+    }
+
+    return response.json();
+}
+
 // ==================== Auth APIs ====================
 
 export interface SyncYouTubeSessionRequest {
@@ -185,17 +210,159 @@ export async function getCompetitorVideos(competitorId: string, limit = 10): Pro
     return fetchApi(`/competitors/${competitorId}/videos?limit=${limit}`);
 }
 
+export interface HookPattern {
+    pattern: string;
+    frequency: number;
+    competitor_count: number;
+    avg_views: number;
+    examples: string[];
+    template: string;
+}
+
+export interface HookCompetitorExample {
+    competitor: string;
+    hooks: string[];
+}
+
+export interface HookFormatProfile {
+    format: "short_form" | "long_form" | "unknown";
+    label: string;
+    video_count: number;
+    summary: string;
+    common_patterns: HookPattern[];
+    recommended_hooks: string[];
+    competitor_examples: HookCompetitorExample[];
+}
+
+export interface HookIntelligence {
+    summary: string;
+    format_definition?: string;
+    common_patterns: HookPattern[];
+    recommended_hooks: string[];
+    competitor_examples: HookCompetitorExample[];
+    format_breakdown?: {
+        short_form: HookFormatProfile;
+        long_form: HookFormatProfile;
+    };
+}
+
+export interface WinnerPatternTopic {
+    topic: string;
+    count: number;
+    avg_views_per_day: number;
+}
+
+export interface WinnerPatternVideo {
+    channel: string;
+    title: string;
+    views: number;
+    views_per_day: number;
+    hook_pattern: string;
+}
+
+export interface WinnerPatternSignals {
+    summary: string;
+    sample_size: number;
+    top_topics_by_velocity: WinnerPatternTopic[];
+    hook_velocity_correlation: number;
+    top_videos_by_velocity: WinnerPatternVideo[];
+}
+
+export interface FrameworkPlaybook {
+    summary: string;
+    stage_adoption: {
+        authority_hook: number;
+        fast_proof: number;
+        framework_steps: number;
+        open_loop: number;
+    };
+    cta_distribution: Record<string, number>;
+    dominant_sequence: string[];
+    execution_notes: string[];
+}
+
+export interface RepurposePlatformPlan {
+    duration_target_s: number;
+    hook_template: string;
+    edit_directives: string[];
+}
+
+export interface BlueprintRepurposePlan {
+    summary: string;
+    core_angle: string;
+    youtube_shorts: RepurposePlatformPlan;
+    instagram_reels: RepurposePlatformPlan;
+    tiktok: RepurposePlatformPlan;
+}
+
 export interface BlueprintResult {
     gap_analysis: string[];
     content_pillars: string[];
     video_ideas: { title: string; concept: string }[];
+    hook_intelligence?: HookIntelligence;
+    winner_pattern_signals?: WinnerPatternSignals;
+    framework_playbook?: FrameworkPlaybook;
+    repurpose_plan?: BlueprintRepurposePlan;
 }
+
+export interface RecommendedCompetitor {
+    channel_id: string;
+    title: string;
+    custom_url?: string;
+    subscriber_count: number;
+    video_count: number;
+    view_count: number;
+    avg_views_per_video: number;
+    thumbnail_url?: string;
+    already_tracked: boolean;
+}
+
+export interface RecommendCompetitorsResponse {
+    niche: string;
+    page: number;
+    limit: number;
+    total_count: number;
+    has_more: boolean;
+    recommendations: RecommendedCompetitor[];
+}
+
+export type CompetitorSuggestionSortBy =
+    | "subscriber_count"
+    | "avg_views_per_video"
+    | "view_count";
+export type CompetitorSuggestionSortDirection = "desc" | "asc";
 
 export async function generateBlueprint(userId?: string): Promise<BlueprintResult> {
     return fetchApi("/competitors/blueprint", {
         method: "POST",
         body: { user_id: resolveUserId(userId) },
     });
+}
+
+export async function recommendCompetitors(
+    niche: string,
+    options: {
+        userId?: string;
+        limit?: number;
+        page?: number;
+        sortBy?: CompetitorSuggestionSortBy;
+        sortDirection?: CompetitorSuggestionSortDirection;
+    } = {}
+): Promise<RecommendCompetitorsResponse> {
+    return fetchApi<RecommendCompetitorsResponse>(
+        "/competitors/recommend",
+        {
+            method: "POST",
+            body: {
+                niche,
+                user_id: resolveUserId(options.userId),
+                limit: options.limit ?? 8,
+                page: options.page ?? 1,
+                sort_by: options.sortBy ?? "subscriber_count",
+                sort_direction: options.sortDirection ?? "desc",
+            },
+        }
+    );
 }
 
 export interface DiagnosisResult {
@@ -220,8 +387,27 @@ export interface RetentionPoint {
 export interface RunAuditRequest {
     source_mode: "url" | "upload";
     video_url?: string;
+    upload_id?: string;
     retention_points?: RetentionPoint[];
+    platform_metrics?: {
+        views?: number;
+        likes?: number;
+        comments?: number;
+        shares?: number;
+        saves?: number;
+        watch_time_hours?: number;
+        avg_view_duration_s?: number;
+        ctr?: number;
+    };
     user_id?: string;
+}
+
+export interface UploadAuditVideoResponse {
+    upload_id: string;
+    file_name: string;
+    mime_type?: string;
+    file_size_bytes: number;
+    status: string;
 }
 
 export interface RunAuditResponse {
@@ -256,6 +442,13 @@ export async function runMultimodalAudit(payload: RunAuditRequest): Promise<RunA
     });
 }
 
+export async function uploadAuditVideo(file: File, userId?: string): Promise<UploadAuditVideoResponse> {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("user_id", resolveUserId(userId));
+    return fetchFormApi<UploadAuditVideoResponse>("/audit/upload", formData);
+}
+
 export async function getAuditStatus(auditId: string): Promise<AuditStatus> {
     return fetchApi<AuditStatus>(`/audit/${auditId}`);
 }
@@ -275,6 +468,109 @@ export interface ConsolidatedReport {
     overall_score: number;
     diagnosis: DiagnosisResult;
     video_analysis: any;
+    performance_prediction?: {
+        format_type: "short_form" | "long_form" | "unknown";
+        duration_seconds: number;
+        competitor_metrics: {
+            score: number;
+            confidence: "low" | "medium" | "high";
+            summary: string;
+            benchmark: {
+                sample_size: number;
+                competitor_count: number;
+                avg_views: number;
+                avg_like_rate: number;
+                avg_comment_rate: number;
+                avg_engagement_rate: number;
+                difficulty_score: number;
+                used_format_filter: boolean;
+            };
+            signals: string[];
+        };
+        platform_metrics: {
+            score: number;
+            summary: string;
+            signals: {
+                overall_multimodal_score: number;
+                base_multimodal_score: number;
+                explicit_detector_score: number;
+                hook_strength: number;
+                pacing_strength: number;
+                timestamp_positive_signals: number;
+                timestamp_negative_signals: number;
+            };
+            detectors?: {
+                time_to_value: {
+                    seconds: number;
+                    target_seconds: number;
+                    score: number;
+                    assessment: "fast" | "moderate" | "slow";
+                };
+                open_loops: {
+                    count: number;
+                    score: number;
+                    examples: string[];
+                };
+                dead_zones: {
+                    count: number;
+                    total_seconds: number;
+                    score: number;
+                    zones: Array<{ start: number; end: number; duration: number }>;
+                };
+                pattern_interrupts: {
+                    interrupts_per_minute: number;
+                    score: number;
+                    assessment: "low" | "healthy" | "high";
+                };
+                cta_style: {
+                    style: string;
+                    score: number;
+                    window: string;
+                };
+            };
+            metric_coverage?: {
+                likes: string;
+                comments: string;
+                shares: string;
+                saves: string;
+                retention_curve: string;
+            };
+            true_metrics?: Record<string, any> | null;
+            true_metric_notes?: string[];
+        };
+        combined_metrics: {
+            score: number;
+            confidence: "low" | "medium" | "high";
+            likelihood_band: "low" | "medium" | "high";
+            summary: string;
+            weights: {
+                competitor_metrics: number;
+                platform_metrics: number;
+            };
+        };
+        repurpose_plan?: {
+            core_thesis: string;
+            source_format: string;
+            youtube_shorts: {
+                target_duration_s: number;
+                hook_deadline_s: number;
+                editing_style: string;
+                cta: string;
+            };
+            instagram_reels: {
+                target_duration_s: number;
+                hook_deadline_s: number;
+                editing_style: string;
+                cta: string;
+            };
+            tiktok: {
+                target_duration_s: number;
+                hook_deadline_s: number;
+                editing_style: string;
+                cta: string;
+            };
+        };
+    };
     blueprint: BlueprintResult;
     recommendations: string[];
 }
