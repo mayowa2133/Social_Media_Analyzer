@@ -12,7 +12,7 @@ import {
     getCompetitors,
     getCurrentUserId,
     getCurrentUserProfile,
-    setCurrentUserId,
+    logoutBackendSession,
     syncYouTubeSession,
 } from "@/lib/api";
 import { DiagnosisCard } from "@/components/diagnosis-card";
@@ -34,7 +34,6 @@ export default function DashboardPage() {
 
             try {
                 let resolvedUserId = getCurrentUserId() || undefined;
-                let resolvedProfile: CurrentUserResponse | null = null;
 
                 if (session?.accessToken && session.user?.email) {
                     setSyncing(true);
@@ -47,16 +46,11 @@ export default function DashboardPage() {
                         picture: session.user.image || undefined,
                     });
                     resolvedUserId = synced.user_id;
-                    setCurrentUserId(synced.user_id);
                 }
 
-                if (!resolvedProfile && resolvedUserId) {
-                    resolvedProfile = await getCurrentUserProfile({ userId: resolvedUserId });
-                } else if (!resolvedProfile && session?.user?.email) {
-                    resolvedProfile = await getCurrentUserProfile({ email: session.user.email });
-                    resolvedUserId = resolvedProfile.user_id;
-                    setCurrentUserId(resolvedProfile.user_id);
-                }
+                const resolvedProfile: CurrentUserResponse | null = resolvedUserId
+                    ? await getCurrentUserProfile()
+                    : null;
 
                 setProfile(resolvedProfile || null);
 
@@ -119,7 +113,10 @@ export default function DashboardPage() {
                     <div className="flex items-center gap-3">
                         {session && (
                             <button
-                                onClick={() => signOut({ callbackUrl: "/" })}
+                                onClick={async () => {
+                                    await logoutBackendSession();
+                                    await signOut({ callbackUrl: "/" });
+                                }}
                                 className="rounded-xl border border-[#d6d6d6] bg-white px-3 py-1.5 text-sm text-[#575757] hover:text-[#1f1f1f]"
                             >
                                 Logout

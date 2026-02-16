@@ -2,10 +2,6 @@ name: Core CI
 
 on:
   pull_request:
-    paths:
-      - "apps/api/**"
-      - "apps/web/**"
-      - ".github/workflows/core-ci.yml"
   workflow_dispatch:
 
 jobs:
@@ -38,6 +34,8 @@ jobs:
           DATABASE_URL: sqlite+aiosqlite:///./tmp_test.db
           AUTO_CREATE_DB_SCHEMA: "true"
           YOUTUBE_API_KEY: "ci-test-key"
+          JWT_SECRET: "ci_test_jwt_secret_value_at_least_24_chars"
+          ENCRYPTION_KEY: "ci_test_encryption_key_at_least_32_chars_long"
         run: PYTHONPATH=. pytest -q tests analysis/tests
 
   web-build:

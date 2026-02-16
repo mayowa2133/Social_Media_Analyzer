@@ -201,6 +201,9 @@ export default function NewAuditPage() {
         setRunning(true);
         try {
             const userId = await resolveUserId();
+            if (!userId) {
+                throw new Error("Connect YouTube before running audits so your session can be authenticated.");
+            }
             let run;
             if (sourceMode === "upload") {
                 setProgressMessage("Uploading video...");

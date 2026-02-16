@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as redis
 
-from config import settings
+from config import settings, validate_security_settings
 
 router = APIRouter()
 
@@ -56,6 +56,10 @@ async def readiness_check():
     missing = []
     if not settings.YOUTUBE_API_KEY:
         missing.append("YOUTUBE_API_KEY")
+    try:
+        validate_security_settings()
+    except Exception:
+        missing.append("SECURITY_SECRETS")
 
     if missing:
         return JSONResponse(

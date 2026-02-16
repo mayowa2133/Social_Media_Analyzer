@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     AUDIT_UPLOAD_RETENTION_HOURS: int = 72
     DELETE_UPLOAD_AFTER_AUDIT: bool = False
     BLUEPRINT_CACHE_TTL_MINUTES: int = 60
+    TRANSCRIPT_CACHE_TTL_SECONDS: int = 604800
     
     # Feature Flags
     ENABLE_TIKTOK_CONNECTORS: bool = False
@@ -60,3 +61,21 @@ def require_youtube_api_key() -> str:
     if not api_key:
         raise ValueError("YOUTUBE_API_KEY is not configured")
     return api_key
+
+
+def validate_security_settings() -> None:
+    """Fail fast when insecure default secrets are still configured."""
+    insecure_values = {
+        "",
+        "change_me_in_production",
+        "change_me_32_byte_key_for_prod",
+        "your_jwt_secret_change_in_production",
+        "your_32_byte_encryption_key_here",
+    }
+    jwt_secret = (settings.JWT_SECRET or "").strip()
+    encryption_key = (settings.ENCRYPTION_KEY or "").strip()
+
+    if jwt_secret in insecure_values or len(jwt_secret) < 24:
+        raise ValueError("JWT_SECRET is insecure. Configure a strong non-default secret (>=24 chars).")
+    if encryption_key in insecure_values or len(encryption_key) < 32:
+        raise ValueError("ENCRYPTION_KEY is insecure. Configure a strong non-default key (>=32 chars).")

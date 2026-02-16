@@ -8,10 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import os
 
-from config import settings
+from config import settings, validate_security_settings
 from database import engine, Base
 import models  # noqa: F401
 from routers import health, auth, youtube, analysis, audit, competitor, report
+from services.audit_queue import recover_stalled_audits
 
 
 @asynccontextmanager
@@ -19,6 +20,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler for startup/shutdown."""
     # Startup
     print("🚀 Starting Social Performance Coach API...")
+    validate_security_settings()
     if settings.AUTO_CREATE_DB_SCHEMA:
         try:
             async with engine.begin() as conn:
@@ -26,6 +28,12 @@ async def lifespan(app: FastAPI):
             print("🗄️ Database schema verified.")
         except Exception as e:
             print(f"⚠️ Database bootstrap skipped: {e}")
+    try:
+        recovered = await recover_stalled_audits()
+        if recovered:
+            print(f"♻️ Recovered {recovered} stalled audits after startup.")
+    except Exception as exc:
+        print(f"⚠️ Stalled audit recovery skipped: {exc}")
     yield
     # Shutdown
     print("👋 Shutting down API...")

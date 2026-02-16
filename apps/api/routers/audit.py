@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional, Literal
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Query, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from pydantic import BaseModel
@@ -19,7 +19,9 @@ from database import get_db
 from models.audit import Audit
 from models.upload import Upload
 from models.user import User
-from services.audit import process_video_audit
+from routers.auth_scope import AuthContext, ensure_user_scope, get_auth_context
+from routers.rate_limit import rate_limit
+from services.audit_queue import enqueue_audit_job
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -51,7 +53,7 @@ class CreateAuditRequest(BaseModel):
     upload_id: Optional[str] = None
     retention_points: Optional[List[RetentionPoint]] = None
     platform_metrics: Optional[PlatformMetricsInput] = None
-    user_id: str
+    user_id: Optional[str] = None
 
 
 class AuditStatusResponse(BaseModel):
@@ -109,11 +111,14 @@ def _cleanup_stale_upload_files() -> None:
 @router.post("/upload", response_model=UploadVideoResponse)
 async def upload_audit_video(
     file: UploadFile = File(...),
-    user_id: str = Form(...),
+    user_id: Optional[str] = Form(default=None),
+    _rate_limit: None = Depends(rate_limit("audit_upload", limit=20, window_seconds=3600)),
+    auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a local video file for audit processing."""
-    await _ensure_user(db, user_id)
+    scoped_user_id = ensure_user_scope(auth.user_id, user_id)
+    await _ensure_user(db, scoped_user_id)
 
     original_filename = _sanitize_filename(file.filename or "upload.mp4")
     suffix = Path(original_filename).suffix.lower()
@@ -126,7 +131,7 @@ async def upload_audit_video(
         )
 
     upload_id = str(uuid.uuid4())
-    user_dir = Path(settings.AUDIT_UPLOAD_DIR) / user_id
+    user_dir = Path(settings.AUDIT_UPLOAD_DIR) / scoped_user_id
     user_dir.mkdir(parents=True, exist_ok=True)
     stored_filename = f"{upload_id}_{original_filename}"
     destination = user_dir / stored_filename
@@ -152,7 +157,7 @@ async def upload_audit_video(
 
     upload = Upload(
         id=upload_id,
-        user_id=user_id,
+        user_id=scoped_user_id,
         file_url=str(destination),
         file_type="video",
         original_filename=original_filename,
@@ -175,7 +180,8 @@ async def upload_audit_video(
 @router.post("/run_multimodal")
 async def run_multimodal_audit(
     request: CreateAuditRequest,
-    background_tasks: BackgroundTasks,
+    _rate_limit: None = Depends(rate_limit("audit_run", limit=30, window_seconds=3600)),
+    auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db)
 ):
     """Start a new multimodal audit for a video."""
@@ -184,7 +190,8 @@ async def run_multimodal_audit(
     if request.source_mode == "upload" and not request.upload_id:
         raise HTTPException(status_code=422, detail="upload_id is required for source_mode='upload'")
 
-    await _ensure_user(db, request.user_id)
+    scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
+    await _ensure_user(db, scoped_user_id)
 
     upload_record: Optional[Upload] = None
     upload_path: Optional[str] = None
@@ -192,7 +199,7 @@ async def run_multimodal_audit(
         upload_result = await db.execute(
             select(Upload).where(
                 Upload.id == request.upload_id,
-                Upload.user_id == request.user_id,
+                Upload.user_id == scoped_user_id,
                 Upload.file_type == "video",
             )
         )
@@ -208,7 +215,7 @@ async def run_multimodal_audit(
     # Create Audit record
     db_audit = Audit(
         id=audit_id,
-        user_id=request.user_id,
+        user_id=scoped_user_id,
         status="pending",
         progress="0",
         input_json={
@@ -224,28 +231,43 @@ async def run_multimodal_audit(
     await db.commit()
     await db.refresh(db_audit)
 
-    # Trigger background task
-    background_tasks.add_task(
-        process_video_audit,
-        audit_id,
-        request.video_url,
-        upload_path,
-        request.source_mode,
-    )
+    # Trigger durable queue job (Redis/RQ)
+    try:
+        job = enqueue_audit_job(
+            audit_id=audit_id,
+            video_url=request.video_url,
+            upload_path=upload_path,
+            source_mode=request.source_mode,
+        )
+        if isinstance(db_audit.input_json, dict):
+            db_audit.input_json = {
+                **db_audit.input_json,
+                "queue_job_id": job.id,
+                "queue_name": job.origin,
+            }
+            await db.commit()
+    except Exception as exc:
+        logger.exception("Could not enqueue audit job %s: %s", audit_id, exc)
+        db_audit.status = "failed"
+        db_audit.error_message = "Could not enqueue audit job. Check Redis/worker availability."
+        await db.commit()
+        raise HTTPException(status_code=503, detail="Audit queue unavailable. Try again shortly.")
 
     return {"audit_id": audit_id, "status": "pending"}
 
 
 @router.get("/")
 async def list_audits(
-    user_id: str = Query(...),
+    user_id: Optional[str] = Query(default=None),
+    auth: AuthContext = Depends(get_auth_context),
     limit: int = Query(default=20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
     """List recent audits for a user."""
+    scoped_user_id = ensure_user_scope(auth.user_id, user_id)
     result = await db.execute(
         select(Audit)
-        .where(Audit.user_id == user_id)
+        .where(Audit.user_id == scoped_user_id)
         .order_by(Audit.created_at.desc())
         .limit(limit)
     )
@@ -264,14 +286,16 @@ async def list_audits(
 @router.get("/{audit_id}")
 async def get_audit_status(
     audit_id: str,
-    user_id: str = Query(...),
+    user_id: Optional[str] = Query(default=None),
+    auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
     """Get status of an audit."""
+    scoped_user_id = ensure_user_scope(auth.user_id, user_id)
     result = await db.execute(
         select(Audit).where(
             Audit.id == audit_id,
-            Audit.user_id == user_id,
+            Audit.user_id == scoped_user_id,
         )
     )
     audit = result.scalar_one_or_none()

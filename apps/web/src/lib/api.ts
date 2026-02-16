@@ -3,8 +3,8 @@
  */
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const DEFAULT_USER_ID = "test-user";
 const USER_ID_STORAGE_KEY = "spc_user_id";
+const BACKEND_SESSION_TOKEN_STORAGE_KEY = "spc_backend_session_token";
 
 interface ApiOptions {
     method?: "GET" | "POST" | "PUT" | "DELETE";
@@ -17,7 +17,11 @@ function safeEncode(value: string): string {
 }
 
 function resolveUserId(userId?: string): string {
-    return userId || getCurrentUserId() || DEFAULT_USER_ID;
+    const resolved = userId || getCurrentUserId();
+    if (!resolved) {
+        throw new Error("No authenticated user found. Connect YouTube to continue.");
+    }
+    return resolved;
 }
 
 export function setCurrentUserId(userId: string) {
@@ -33,6 +37,26 @@ export function getCurrentUserId(): string | null {
     return localStorage.getItem(USER_ID_STORAGE_KEY);
 }
 
+export function setBackendSessionToken(token: string) {
+    if (typeof window !== "undefined") {
+        localStorage.setItem(BACKEND_SESSION_TOKEN_STORAGE_KEY, token);
+    }
+}
+
+export function getBackendSessionToken(): string | null {
+    if (typeof window === "undefined") {
+        return null;
+    }
+    return localStorage.getItem(BACKEND_SESSION_TOKEN_STORAGE_KEY);
+}
+
+export function clearStoredAuthSession() {
+    if (typeof window !== "undefined") {
+        localStorage.removeItem(USER_ID_STORAGE_KEY);
+        localStorage.removeItem(BACKEND_SESSION_TOKEN_STORAGE_KEY);
+    }
+}
+
 async function fetchApi<T>(endpoint: string, options: ApiOptions = {}): Promise<T> {
     const { method = "GET", body, accessToken } = options;
 
@@ -40,8 +64,9 @@ async function fetchApi<T>(endpoint: string, options: ApiOptions = {}): Promise<
         "Content-Type": "application/json",
     };
 
-    if (accessToken) {
-        headers.Authorization = `Bearer ${accessToken}`;
+    const bearerToken = accessToken || getBackendSessionToken();
+    if (bearerToken) {
+        headers.Authorization = `Bearer ${bearerToken}`;
     }
 
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
@@ -65,8 +90,9 @@ async function fetchFormApi<T>(
     options: { accessToken?: string } = {}
 ): Promise<T> {
     const headers: Record<string, string> = {};
-    if (options.accessToken) {
-        headers.Authorization = `Bearer ${options.accessToken}`;
+    const bearerToken = options.accessToken || getBackendSessionToken();
+    if (bearerToken) {
+        headers.Authorization = `Bearer ${bearerToken}`;
     }
 
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
@@ -101,6 +127,8 @@ export interface SyncYouTubeSessionResponse {
     user_id: string;
     email: string;
     youtube_connected: boolean;
+    session_token: string;
+    session_expires_at: number;
     channel_id?: string;
     channel_title?: string;
     channel_handle?: string;
@@ -127,14 +155,20 @@ export async function syncYouTubeSession(payload: SyncYouTubeSessionRequest): Pr
         body: payload,
     });
     setCurrentUserId(result.user_id);
+    setBackendSessionToken(result.session_token);
     return result;
 }
 
-export async function getCurrentUserProfile(params: { userId?: string; email?: string } = {}): Promise<CurrentUserResponse> {
-    const query = params.userId
-        ? `user_id=${safeEncode(params.userId)}`
-        : `email=${safeEncode(params.email || "")}`;
-    return fetchApi<CurrentUserResponse>(`/auth/me?${query}`);
+export async function getCurrentUserProfile(): Promise<CurrentUserResponse> {
+    return fetchApi<CurrentUserResponse>("/auth/me");
+}
+
+export async function logoutBackendSession(): Promise<void> {
+    try {
+        await fetchApi<{ message: string }>("/auth/logout", { method: "POST" });
+    } finally {
+        clearStoredAuthSession();
+    }
 }
 
 // ==================== Channel APIs ====================
@@ -575,6 +609,15 @@ export interface ConsolidatedReport {
             true_metrics?: Record<string, any> | null;
             true_metric_notes?: string[];
         };
+        historical_metrics?: {
+            sample_size: number;
+            format_sample_size: number;
+            score: number;
+            confidence: "low" | "medium" | "high";
+            insufficient_data: boolean;
+            summary: string;
+            signals: string[];
+        };
         combined_metrics: {
             score: number;
             confidence: "low" | "medium" | "high";
@@ -583,7 +626,10 @@ export interface ConsolidatedReport {
             weights: {
                 competitor_metrics: number;
                 platform_metrics: number;
+                historical_metrics?: number;
             };
+            insufficient_data?: boolean;
+            insufficient_data_reasons?: string[];
         };
         repurpose_plan?: {
             core_thesis: string;

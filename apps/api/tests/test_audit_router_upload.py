@@ -3,10 +3,16 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from database import Base, get_db
 from main import app
+from services.audit import process_video_audit
+from services.session_token import create_session_token
+
+
+UPLOAD_USER_ID = "upload-user"
+UPLOAD_AUTH_HEADER = {"Authorization": f"Bearer {create_session_token(UPLOAD_USER_ID)['token']}"}
 
 
 @pytest_asyncio.fixture
@@ -31,13 +37,36 @@ async def integration_client(tmp_path):
     await engine.dispose()
 
 
+class _FakeJob:
+    def __init__(self, job_id: str):
+        self.id = job_id
+        self.origin = "audit_jobs"
+
+
+def _enqueue_noop(audit_id: str, video_url: str | None, upload_path: str | None, source_mode: str):
+    return _FakeJob(f"audit:{audit_id}")
+
+
+def _enqueue_with_async_processing(audit_id: str, video_url: str | None, upload_path: str | None, source_mode: str):
+    asyncio.create_task(
+        process_video_audit(
+            audit_id=audit_id,
+            video_url=video_url,
+            upload_path=upload_path,
+            source_mode=source_mode,
+        )
+    )
+    return _FakeJob(f"audit:{audit_id}")
+
+
 @pytest.mark.asyncio
 async def test_upload_video_and_start_upload_mode_audit(integration_client):
-    with patch("routers.audit.process_video_audit", new=AsyncMock(return_value=None)):
+    with patch("routers.audit.enqueue_audit_job", side_effect=_enqueue_noop):
         upload_resp = await integration_client.post(
             "/audit/upload",
             files={"file": ("sample.mp4", b"fake-video-binary", "video/mp4")},
-            data={"user_id": "upload-user"},
+            data={"user_id": UPLOAD_USER_ID},
+            headers=UPLOAD_AUTH_HEADER,
         )
         assert upload_resp.status_code == 200
         upload_data = upload_resp.json()
@@ -49,8 +78,9 @@ async def test_upload_video_and_start_upload_mode_audit(integration_client):
             json={
                 "source_mode": "upload",
                 "upload_id": upload_data["upload_id"],
-                "user_id": "upload-user",
+                "user_id": UPLOAD_USER_ID,
             },
+            headers=UPLOAD_AUTH_HEADER,
         )
         assert run_resp.status_code == 200
         run_data = run_resp.json()
@@ -84,11 +114,13 @@ async def test_upload_mode_audit_outputs_next_actions(integration_client):
          patch("services.audit.transcribe_audio", return_value=mock_transcript), \
          patch("services.audit.analyze_content", return_value=mock_analysis_result), \
          patch("services.audit.get_video_duration_seconds", return_value=36), \
-         patch("services.audit.shutil.rmtree"):
+         patch("services.audit.shutil.rmtree"), \
+         patch("routers.audit.enqueue_audit_job", side_effect=_enqueue_with_async_processing):
         upload_resp = await integration_client.post(
             "/audit/upload",
             files={"file": ("sample.mp4", b"fake-video-binary", "video/mp4")},
-            data={"user_id": "upload-user"},
+            data={"user_id": UPLOAD_USER_ID},
+            headers=UPLOAD_AUTH_HEADER,
         )
         assert upload_resp.status_code == 200
         upload_data = upload_resp.json()
@@ -98,16 +130,20 @@ async def test_upload_mode_audit_outputs_next_actions(integration_client):
             json={
                 "source_mode": "upload",
                 "upload_id": upload_data["upload_id"],
-                "user_id": "upload-user",
+                "user_id": UPLOAD_USER_ID,
                 "platform_metrics": {"views": 12000, "likes": 640, "comments": 54},
             },
+            headers=UPLOAD_AUTH_HEADER,
         )
         assert run_resp.status_code == 200
         audit_id = run_resp.json()["audit_id"]
 
         status_payload = {}
         for _ in range(15):
-            status_resp = await integration_client.get(f"/audit/{audit_id}?user_id=upload-user")
+            status_resp = await integration_client.get(
+                f"/audit/{audit_id}?user_id={UPLOAD_USER_ID}",
+                headers=UPLOAD_AUTH_HEADER,
+            )
             assert status_resp.status_code == 200
             status_payload = status_resp.json()
             if status_payload.get("status") == "completed":

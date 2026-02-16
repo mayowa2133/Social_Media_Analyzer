@@ -69,7 +69,7 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                     {hasCorePrediction && prediction && (
                         <section className="mb-16">
                             <h2 className="mb-6 text-2xl font-bold text-[#1f1f1f]">Performance Likelihood Scores</h2>
-                            <div className="mb-4 grid gap-4 md:grid-cols-3">
+                            <div className={`mb-4 grid gap-4 ${prediction.historical_metrics ? "md:grid-cols-4" : "md:grid-cols-3"}`}>
                                 <div className="rounded-2xl border border-[#dcdcdc] bg-white p-5">
                                     <p className="mb-2 text-xs uppercase tracking-wide text-[#7a7a7a]">Competitor Metrics</p>
                                     <p className="text-3xl font-bold text-[#514aa2]">
@@ -93,8 +93,39 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                                         <span className="text-sm text-[#8a8a8a]">/100</span>
                                     </p>
                                     <p className="mt-2 text-xs text-[#666]">{prediction.combined_metrics.summary}</p>
+                                    <p className="mt-1 text-[11px] uppercase tracking-wide text-[#6f6f6f]">
+                                        Confidence: {prediction.combined_metrics.confidence}
+                                    </p>
                                 </div>
+                                {prediction.historical_metrics && (
+                                    <div className="rounded-2xl border border-[#dcdcdc] bg-white p-5">
+                                        <p className="mb-2 text-xs uppercase tracking-wide text-[#7a7a7a]">Historical Calibration</p>
+                                        <p className="text-3xl font-bold text-[#7a5a2f]">
+                                            {Math.round(prediction.historical_metrics.score)}
+                                            <span className="text-sm text-[#8a8a8a]">/100</span>
+                                        </p>
+                                        <p className="mt-2 text-xs text-[#666]">{prediction.historical_metrics.summary}</p>
+                                        <p className="mt-1 text-[11px] text-[#6f6f6f]">
+                                            Samples: {prediction.historical_metrics.format_sample_size} format-matched
+                                        </p>
+                                    </div>
+                                )}
                             </div>
+
+                            {prediction.combined_metrics.insufficient_data && (
+                                <div className="mb-4 rounded-2xl border border-[#ecd9bc] bg-[#fff8ed] p-4">
+                                    <p className="text-xs font-semibold uppercase tracking-wide text-[#8a6438]">
+                                        Insufficient data for highest-confidence prediction
+                                    </p>
+                                    {!!prediction.combined_metrics.insufficient_data_reasons?.length && (
+                                        <ul className="mt-2 space-y-1 text-xs text-[#735534]">
+                                            {prediction.combined_metrics.insufficient_data_reasons.map((reason, idx) => (
+                                                <li key={idx}>• {reason}</li>
+                                            ))}
+                                        </ul>
+                                    )}
+                                </div>
+                            )}
                             <div className="rounded-2xl border border-[#dcdcdc] bg-white p-4">
                                 <p className="text-xs text-[#696969]">
                                     Format: {prediction.format_type.replace("_", "-")} · Duration: {prediction.duration_seconds}s · Competitor benchmark samples: {prediction.competitor_metrics.benchmark?.sample_size ?? 0}

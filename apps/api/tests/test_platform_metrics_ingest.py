@@ -7,6 +7,11 @@ from sqlalchemy import select
 from main import app
 from database import Base, get_db
 from models.video_metrics import VideoMetrics
+from services.session_token import create_session_token
+
+
+INGEST_USER_ID = "user-ingest"
+INGEST_AUTH_HEADER = {"Authorization": f"Bearer {create_session_token(INGEST_USER_ID)['token']}"}
 
 
 @pytest_asyncio.fixture
@@ -37,7 +42,7 @@ async def test_ingest_platform_metrics_persists_true_shares_saves_retention(inge
     response = await client.post(
         "/analysis/ingest/platform_metrics",
         json={
-            "user_id": "user-ingest",
+            "user_id": INGEST_USER_ID,
             "platform": "youtube",
             "video_external_id": "abc123",
             "video_url": "https://www.youtube.com/watch?v=abc123",
@@ -53,6 +58,7 @@ async def test_ingest_platform_metrics_persists_true_shares_saves_retention(inge
                 {"time": 30, "retention": 64},
             ],
         },
+        headers=INGEST_AUTH_HEADER,
     )
 
     assert response.status_code == 200
@@ -69,3 +75,30 @@ async def test_ingest_platform_metrics_persists_true_shares_saves_retention(inge
         assert metrics.saves == 780
         assert isinstance(metrics.retention_points_json, list)
         assert len(metrics.retention_points_json) == 3
+
+
+@pytest.mark.asyncio
+async def test_ingest_platform_metrics_csv_bulk_upload(ingest_client):
+    client, session_maker = ingest_client
+    csv_payload = """video_external_id,video_url,title,views,likes,comments,shares,saves,avg_view_duration_s,ctr,retention_points_json
+abc123,https://www.youtube.com/watch?v=abc123,Video A,150000,6200,410,280,760,28.4,0.067,"[{""time"":0,""retention"":100},{""time"":5,""retention"":82}]"
+xyz789,https://www.youtube.com/watch?v=xyz789,Video B,98000,4100,290,190,520,22.1,0.054,"[{""time"":0,""retention"":100},{""time"":5,""retention"":74}]"
+"""
+    response = await client.post(
+        "/analysis/ingest/platform_metrics_csv",
+        params={"user_id": INGEST_USER_ID, "platform": "youtube"},
+        files={"file": ("metrics.csv", csv_payload.encode("utf-8"), "text/csv")},
+        headers=INGEST_AUTH_HEADER,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ingested"] is True
+    assert payload["processed_rows"] == 2
+    assert payload["successful_rows"] == 2
+    assert payload["failed_rows"] == 0
+
+    async with session_maker() as db:
+        result = await db.execute(select(VideoMetrics))
+        metrics = result.scalars().all()
+        assert len(metrics) == 2

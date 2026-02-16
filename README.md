@@ -12,6 +12,7 @@ This MVP is currently focused on YouTube.
 
 Implemented:
 - Google OAuth connection flow (NextAuth on frontend, encrypted token persistence in backend).
+- Backend-authenticated session token after OAuth sync; protected APIs derive `user_id` from Bearer token (no `test-user` fallback).
 - Channel diagnosis (`packaging`, `consistency`, topic and format-aware analysis).
 - Competitor tracking (add/list/remove).
 - Competitor recommendations by niche:
@@ -25,10 +26,13 @@ Implemented:
   - YouTube URL
   - local video upload
   - optional retention points.
+- Durable audit processing via Redis/RQ queue with retries and timeouts.
+- Transcript-first extraction with per-video Redis transcript cache.
+- Platform metrics bulk import via CSV (`retention/shares/saves/watch-time` ingest path).
 - Performance likelihood scoring with 3 score sets:
   - competitor metrics
   - platform metrics
-  - combined metrics.
+  - combined metrics (with historical posted-video calibration when enough data is available).
 - Consolidated report contract and report pages (`/report/latest`, `/report/{audit_id}`).
 - Playwright smoke test flow in CI (`connect -> competitors -> audit -> report`).
 
@@ -64,6 +68,7 @@ Backend (`apps/api`):
   - `yt-dlp` (video download for URL mode)
   - `ffmpeg` (frame extraction + duration)
   - audio transcription + LLM analysis (OpenAI optional, deterministic fallback for local/dev).
+  - RQ worker queue for durable audit processing.
 
 ## Repository Layout
 
@@ -114,6 +119,7 @@ Set at least:
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
 - `ENCRYPTION_KEY`
+- `JWT_SECRET` (must be strong; insecure defaults fail startup)
 - `OPENAI_API_KEY` (optional; fallback works without it)
 
 ### 2) Web env
@@ -155,7 +161,14 @@ pip install -r requirements.txt
 uvicorn main:app --host localhost --port 8000 --reload
 ```
 
-3. Run web:
+3. Run API worker (separate terminal):
+
+```bash
+cd apps/api
+python worker.py
+```
+
+4. Run web:
 
 ```bash
 cd apps/web
@@ -163,7 +176,7 @@ npm install
 npm run dev -- --port 3000
 ```
 
-4. Open:
+5. Open:
 - Web: `http://localhost:3000`
 - API docs: `http://localhost:8000/docs`
 
@@ -240,7 +253,7 @@ Legacy route behavior:
 - `GET /health/live`
 
 ### Auth
-- `GET /auth/me?user_id=...` or `GET /auth/me?email=...`
+- `GET /auth/me` (Bearer session token required)
 - `POST /auth/sync/youtube`
 - `POST /auth/logout`
 
@@ -256,12 +269,14 @@ Video detail contract uses:
 
 ### Analysis
 - `GET /analysis/diagnose/channel/{channel_id}`
+- `POST /analysis/ingest/platform_metrics`
+- `POST /analysis/ingest/platform_metrics_csv` (CSV upload)
 
 ### Competitors
 - `POST /competitors/`
 - `GET /competitors/?user_id=...`
-- `DELETE /competitors/{competitor_id}`
-- `GET /competitors/{competitor_id}/videos`
+- `DELETE /competitors/{competitor_id}?user_id=...`
+- `GET /competitors/{competitor_id}/videos?user_id=...`
 - `POST /competitors/recommend`
 - `POST /competitors/blueprint`
 
@@ -269,7 +284,7 @@ Video detail contract uses:
 - `POST /audit/upload` (multipart)
 - `POST /audit/run_multimodal`
 - `GET /audit/?user_id=...`
-- `GET /audit/{audit_id}`
+- `GET /audit/{audit_id}?user_id=...`
 
 ### Report
 - `GET /report/latest?user_id=...`
@@ -299,14 +314,18 @@ Smoke scenario covered:
 
 Workflow:
 - `.github/workflows/web-smoke.yml`
+- `.github/workflows/core-ci.yml`
 
 Job:
 - `Playwright Smoke`
+- `API Tests`
+- `Web Typecheck + Build`
 
 Behavior:
-- Runs on pull requests that touch `apps/web/**`.
+- Runs on all pull requests.
 - Executes Playwright smoke in CI mode.
 - Uploads Playwright HTML report, traces, screenshots, and videos on failure.
+- Core CI runs backend tests and web typecheck/build on all pull requests.
 
 ## Troubleshooting
 
@@ -332,6 +351,26 @@ Behavior:
 - Max upload size is 300MB.
 - Supported formats: `mp4`, `mov`, `m4v`, `webm`, `avi`, `mkv`.
 
+### Missing Bearer session token
+- Protected routes now require backend session auth.
+- Connect YouTube first (`/connect`) to sync OAuth and mint backend session token.
+
+## Additive Report Fields (Examples)
+
+`performance_prediction.platform_metrics` now includes:
+- `detector_rankings[]` with rank/priority/gap/lift/evidence/edits
+- `signals.detector_weighted_score`
+- `signals.detector_weight_breakdown`
+
+`performance_prediction` now includes:
+- `next_actions[]` (ranked pre-post edits)
+- `historical_metrics` (posted-video calibration stats and confidence)
+- `combined_metrics.insufficient_data` and `combined_metrics.insufficient_data_reasons[]`
+
+`blueprint` now includes:
+- `transcript_quality`
+- `velocity_actions[]`
+
 ## Security Notes
 
 - OAuth access/refresh tokens are encrypted before persistence (`connections` table).
@@ -340,7 +379,6 @@ Behavior:
 
 ## Suggested Next Steps
 
-1. Apply the studio UI system to the landing page (`/`) for full visual parity.
-2. Add backend API docs/examples for `/competitors/recommend` and `/audit/run_multimodal`.
-3. Add API contract tests for performance prediction payloads.
-4. Add branch protection rule requiring `Playwright Smoke` before merges.
+1. Add GitHub branch protection requiring both `Playwright Smoke` and `Core CI` checks, and disable bypass on required checks.
+2. Add API docs/examples for `platform_metrics_csv` import templates.
+3. Add historical score calibration tuning from larger posted-video datasets.

@@ -13,3 +13,21 @@ This API supports two schema bootstrap paths:
    - `DATABASE_URL=postgresql://... ./venv/bin/alembic -c alembic.ini upgrade head`
 
 Migration files live in `apps/api/alembic/versions`.
+
+## Worker queue
+
+Audit execution is queue-backed using Redis/RQ.
+
+Start worker locally:
+
+```bash
+cd apps/api
+python worker.py
+```
+
+## Security defaults
+
+Startup now fails if insecure default secrets are still configured.
+Set strong values for:
+- `JWT_SECRET` (>=24 chars)
+- `ENCRYPTION_KEY` (>=32 chars)

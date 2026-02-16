@@ -133,11 +133,17 @@ async def test_connect_competitor_diagnose_blueprint_report(integration_client):
         sync_data = sync_resp.json()
         user_id = sync_data["user_id"]
         channel_id = sync_data["channel_id"]
+        auth_headers = {"Authorization": f"Bearer {sync_data['session_token']}"}
+
+        me_resp = await client.get("/auth/me", headers=auth_headers)
+        assert me_resp.status_code == 200
+        assert me_resp.json()["user_id"] == user_id
 
         # 2) Add competitor.
         comp_resp = await client.post(
             "/competitors/",
             json={"channel_url": "https://youtube.com/@competitor", "user_id": user_id},
+            headers=auth_headers,
         )
         assert comp_resp.status_code == 200
 
@@ -168,7 +174,10 @@ async def test_connect_competitor_diagnose_blueprint_report(integration_client):
             await db.commit()
 
         # 5) Fetch consolidated report.
-        report_resp = await client.get(f"/report/latest?user_id={user_id}")
+        report_resp = await client.get(
+            f"/report/latest?user_id={user_id}",
+            headers=auth_headers,
+        )
         assert report_resp.status_code == 200
         report = report_resp.json()
         assert report["overall_score"] > 0

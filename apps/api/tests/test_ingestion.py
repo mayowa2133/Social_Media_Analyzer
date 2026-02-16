@@ -7,10 +7,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from main import app
 from database import get_db
 from ingestion.youtube import YouTubeClient
+from services.session_token import create_session_token
 
 # Mock settings to use SQLite for testing
 import os
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
+
+
+TEST_USER_ID = "test-user"
+TEST_AUTH_HEADER = {"Authorization": f"Bearer {create_session_token(TEST_USER_ID)['token']}"}
 
 
 @pytest.fixture
@@ -146,6 +151,7 @@ async def test_add_competitor(client, mock_youtube_client):
         response = await client.post(
             "/competitors/",
             json={"channel_url": "http://youtube.com/valid", "user_id": "test-user"},
+            headers=TEST_AUTH_HEADER,
         )
         assert response.status_code == 200
         data = response.json()
@@ -156,6 +162,7 @@ async def test_add_competitor(client, mock_youtube_client):
         response = await client.post(
             "/competitors/",
             json={"channel_url": "http://youtube.com/valid", "user_id": "test-user"},
+            headers=TEST_AUTH_HEADER,
         )
         assert response.status_code == 400
         assert "already added" in response.json()["detail"]
@@ -213,6 +220,7 @@ async def test_recommend_competitors(client, mock_youtube_client):
                 "sort_by": "avg_views_per_video",
                 "sort_direction": "asc",
             },
+            headers=TEST_AUTH_HEADER,
         )
         assert response.status_code == 200
         data = response.json()
@@ -235,6 +243,7 @@ async def test_recommend_competitors(client, mock_youtube_client):
                 "sort_by": "avg_views_per_video",
                 "sort_direction": "asc",
             },
+            headers=TEST_AUTH_HEADER,
         )
         assert response.status_code == 200
         data = response.json()
@@ -251,9 +260,9 @@ async def test_recommend_competitors(client, mock_youtube_client):
 
 @pytest.mark.asyncio
 async def test_remove_competitor_requires_user_scope(client):
-    """Delete competitor endpoint must include user scoping."""
+    """Delete competitor endpoint requires auth token."""
     response = await client.delete("/competitors/comp-123")
-    assert response.status_code == 422
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -278,7 +287,10 @@ async def test_remove_competitor_with_user_scope(client):
 
     app.dependency_overrides[get_db] = override_get_db
     try:
-        response = await client.delete("/competitors/comp-123?user_id=test-user")
+        response = await client.delete(
+            "/competitors/comp-123?user_id=test-user",
+            headers=TEST_AUTH_HEADER,
+        )
         assert response.status_code == 200
         assert response.json()["message"] == "Competitor removed"
         mock_db.delete.assert_awaited_once_with(competitor)
@@ -287,10 +299,20 @@ async def test_remove_competitor_with_user_scope(client):
 
 
 @pytest.mark.asyncio
+async def test_remove_competitor_rejects_cross_user_scope(client):
+    """Delete competitor rejects mismatched query user_id."""
+    response = await client.delete(
+        "/competitors/comp-123?user_id=other-user",
+        headers=TEST_AUTH_HEADER,
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_get_competitor_videos_requires_user_scope(client):
-    """Competitor videos endpoint must include user scoping."""
+    """Competitor videos endpoint requires auth token."""
     response = await client.get("/competitors/comp-123/videos")
-    assert response.status_code == 422
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -315,10 +337,23 @@ async def test_get_competitor_videos_with_user_scope(client, mock_youtube_client
 
     app.dependency_overrides[get_db] = override_get_db
     try:
-        response = await client.get("/competitors/comp-123/videos?user_id=test-user&limit=2")
+        response = await client.get(
+            "/competitors/comp-123/videos?user_id=test-user&limit=2",
+            headers=TEST_AUTH_HEADER,
+        )
         assert response.status_code == 200
         videos = response.json()
         assert len(videos) == 2
         assert videos[0]["video_id"] == "video1"
     finally:
         app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.mark.asyncio
+async def test_get_competitor_videos_rejects_cross_user_scope(client):
+    """Competitor videos endpoint rejects mismatched query user_id."""
+    response = await client.get(
+        "/competitors/comp-123/videos?user_id=other-user",
+        headers=TEST_AUTH_HEADER,
+    )
+    assert response.status_code == 403

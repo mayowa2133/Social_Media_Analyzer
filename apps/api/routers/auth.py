@@ -16,7 +16,9 @@ from ingestion.youtube import create_youtube_client_with_oauth
 from models.connection import Connection
 from models.profile import Profile
 from models.user import User
+from routers.auth_scope import AuthContext, get_auth_context
 from services.crypto import encrypt_token
+from services.session_token import create_session_token
 
 router = APIRouter()
 
@@ -36,6 +38,8 @@ class SyncYouTubeSessionResponse(BaseModel):
     user_id: str
     email: str
     youtube_connected: bool
+    session_token: str
+    session_expires_at: int
     channel_id: Optional[str] = None
     channel_title: Optional[str] = None
     channel_handle: Optional[str] = None
@@ -64,21 +68,11 @@ def _to_datetime(value: Optional[int]) -> Optional[datetime]:
 
 @router.get("/me", response_model=CurrentUserResponse)
 async def get_current_user(
-    user_id: Optional[str] = None,
-    email: Optional[str] = None,
+    auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
     """Get current user profile and YouTube connection status."""
-    if not user_id and not email:
-        raise HTTPException(status_code=400, detail="Provide user_id or email")
-
-    query = select(User)
-    if user_id:
-        query = query.where(User.id == user_id)
-    else:
-        query = query.where(User.email == str(email))
-
-    result = await db.execute(query)
+    result = await db.execute(select(User).where(User.id == auth.user_id))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -218,11 +212,14 @@ async def sync_youtube_session(
 
     await db.commit()
     await db.refresh(user)
+    session = create_session_token(user.id, user.email)
 
     return SyncYouTubeSessionResponse(
         user_id=user.id,
         email=user.email,
         youtube_connected=True,
+        session_token=session["token"],
+        session_expires_at=session["expires_at"],
         channel_id=channel_info.get("id"),
         channel_title=channel_info.get("title"),
         channel_handle=channel_info.get("custom_url") or channel_info.get("title"),
@@ -232,6 +229,6 @@ async def sync_youtube_session(
 
 
 @router.post("/logout")
-async def logout():
+async def logout(_auth: AuthContext = Depends(get_auth_context)):
     """Frontend-managed logout acknowledgment endpoint."""
     return {"message": "Logged out successfully"}

@@ -10,6 +10,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+import redis.asyncio as redis
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
@@ -63,6 +64,7 @@ TOPIC_STOP_WORDS = {
 TRANSCRIPT_FETCH_TIMEOUT_SECONDS = 6.0
 TRANSCRIPT_FETCH_CONCURRENCY = 6
 TRUE_TRANSCRIPT_SOURCES = {"youtube_transcript_api", "youtube_captions"}
+TRANSCRIPT_CACHE_KEY_PREFIX = "spc:transcript:"
 
 
 def _get_youtube_client():
@@ -452,6 +454,70 @@ async def _extract_transcript_payload(
                 "char_count": len(title_text[:300]),
                 "segment_count": 0,
             }
+
+
+def _transcript_cache_key(video_id: str) -> str:
+    return f"{TRANSCRIPT_CACHE_KEY_PREFIX}{video_id}"
+
+
+def _is_valid_transcript_payload(payload: Any) -> bool:
+    return (
+        isinstance(payload, dict)
+        and isinstance(payload.get("text"), str)
+        and isinstance(payload.get("source"), str)
+    )
+
+
+async def _load_cached_transcript_payloads(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    if not video_ids:
+        return {}
+
+    ttl = max(int(settings.TRANSCRIPT_CACHE_TTL_SECONDS), 1)
+    if ttl <= 0:
+        return {}
+
+    client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+    try:
+        keys = [_transcript_cache_key(video_id) for video_id in video_ids]
+        raw_payloads = await client.mget(keys)
+        cached: Dict[str, Dict[str, Any]] = {}
+        for idx, raw in enumerate(raw_payloads):
+            if not raw:
+                continue
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                continue
+            if _is_valid_transcript_payload(parsed):
+                cached[video_ids[idx]] = parsed
+        return cached
+    except Exception as exc:
+        logger.warning("Transcript cache read failed: %s", exc)
+        return {}
+    finally:
+        await client.aclose()
+
+
+async def _store_cached_transcript_payloads(payload_by_video_id: Dict[str, Dict[str, Any]]) -> None:
+    if not payload_by_video_id:
+        return
+
+    ttl = max(int(settings.TRANSCRIPT_CACHE_TTL_SECONDS), 1)
+    if ttl <= 0:
+        return
+
+    client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+    try:
+        pipe = client.pipeline()
+        for video_id, payload in payload_by_video_id.items():
+            if not _is_valid_transcript_payload(payload):
+                continue
+            pipe.setex(_transcript_cache_key(video_id), ttl, json.dumps(payload, separators=(",", ":"), ensure_ascii=True))
+        await pipe.execute()
+    except Exception as exc:
+        logger.warning("Transcript cache write failed: %s", exc)
+    finally:
+        await client.aclose()
 
 
 def _build_transcript_quality(videos: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1227,13 +1293,20 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession) -> Dict[str
             vid_ids = [v["id"] for v in vids if v.get("id")]
             details = client.get_video_details(vid_ids)
 
-            transcript_tasks: List[asyncio.Task] = []
             ordered_video_ids: List[str] = []
             for video in vids:
                 video_id = str(video.get("id", "")).strip()
-                if not video_id:
+                if video_id:
+                    ordered_video_ids.append(video_id)
+
+            transcript_map: Dict[str, Dict[str, Any]] = await _load_cached_transcript_payloads(ordered_video_ids)
+            missing_video_ids = [video_id for video_id in ordered_video_ids if video_id not in transcript_map]
+
+            transcript_tasks: List[asyncio.Task] = []
+            for video in vids:
+                video_id = str(video.get("id", "")).strip()
+                if not video_id or video_id not in missing_video_ids:
                     continue
-                ordered_video_ids.append(video_id)
                 transcript_tasks.append(
                     asyncio.create_task(
                         _extract_transcript_payload(
@@ -1247,11 +1320,13 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession) -> Dict[str
                 )
 
             transcript_payloads = await asyncio.gather(*transcript_tasks) if transcript_tasks else []
-            transcript_map = {
-                video_id: transcript_payloads[idx]
-                for idx, video_id in enumerate(ordered_video_ids)
-                if idx < len(transcript_payloads)
-            }
+            fresh_payloads: Dict[str, Dict[str, Any]] = {}
+            for idx, video_id in enumerate(missing_video_ids):
+                if idx < len(transcript_payloads) and _is_valid_transcript_payload(transcript_payloads[idx]):
+                    payload = transcript_payloads[idx]
+                    transcript_map[video_id] = payload
+                    fresh_payloads[video_id] = payload
+            await _store_cached_transcript_payloads(fresh_payloads)
 
             enriched = []
             for video in vids:

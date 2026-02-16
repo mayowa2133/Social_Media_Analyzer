@@ -14,6 +14,8 @@ from sqlalchemy.future import select
 from database import get_db
 from models.competitor import Competitor
 from models.user import User
+from routers.auth_scope import AuthContext, ensure_user_scope, get_auth_context
+from routers.rate_limit import rate_limit
 from routers.youtube import _get_youtube_client, get_channel_videos
 
 router = APIRouter()
@@ -24,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 class AddCompetitorRequest(BaseModel):
     channel_url: str
-    user_id: str
+    user_id: Optional[str] = None
 
 
 class CompetitorResponse(BaseModel):
@@ -40,12 +42,12 @@ class CompetitorResponse(BaseModel):
 
 
 class BlueprintRequest(BaseModel):
-    user_id: str
+    user_id: Optional[str] = None
 
 
 class RecommendCompetitorsRequest(BaseModel):
     niche: str
-    user_id: str
+    user_id: Optional[str] = None
     limit: int = Field(default=8, ge=1, le=20)
     page: int = Field(default=1, ge=1)
     sort_by: Literal["subscriber_count", "avg_views_per_video", "view_count"] = "subscriber_count"
@@ -78,28 +80,31 @@ class RecommendCompetitorsResponse(BaseModel):
 @router.post("/", response_model=CompetitorResponse)
 async def add_competitor(
     request: AddCompetitorRequest,
+    _rate_limit: None = Depends(rate_limit("competitor_add", limit=40, window_seconds=3600)),
+    auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
     """Add a competitor channel to track."""
     try:
         client = _get_youtube_client()
+        scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
 
         channel_id = client.resolve_channel_identifier(request.channel_url)
         if not channel_id:
             raise HTTPException(status_code=400, detail="Could not resolve channel URL")
 
         # Ensure user exists for FK integrity in MVP mode.
-        user_result = await db.execute(select(User).where(User.id == request.user_id))
+        user_result = await db.execute(select(User).where(User.id == scoped_user_id))
         user = user_result.scalar_one_or_none()
         if not user:
-            user = User(id=request.user_id, email=f"{request.user_id}@local.invalid")
+            user = User(id=scoped_user_id, email=f"{scoped_user_id}@local.invalid")
             db.add(user)
             await db.flush()
 
         # Check if already added for this user.
         result = await db.execute(
             select(Competitor).where(
-                Competitor.user_id == request.user_id,
+                Competitor.user_id == scoped_user_id,
                 Competitor.external_id == channel_id,
             )
         )
@@ -112,7 +117,7 @@ async def add_competitor(
 
         new_comp = Competitor(
             id=str(uuid.uuid4()),
-            user_id=request.user_id,
+            user_id=scoped_user_id,
             platform="youtube",
             handle=info.get("custom_url", "") or info["title"],
             external_id=channel_id,
@@ -140,17 +145,19 @@ async def add_competitor(
     except HTTPException:
         raise
     except Exception:
-        logger.exception("Failed to add competitor for user %s", request.user_id)
+        logger.exception("Failed to add competitor for user %s", auth.user_id)
         raise HTTPException(status_code=500, detail="Failed to add competitor.")
 
 
 @router.get("/", response_model=List[CompetitorResponse])
 async def list_competitors(
-    user_id: str,
+    user_id: Optional[str] = Query(default=None),
+    auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
     """List all competitors for a user."""
-    result = await db.execute(select(Competitor).where(Competitor.user_id == user_id))
+    scoped_user_id = ensure_user_scope(auth.user_id, user_id)
+    result = await db.execute(select(Competitor).where(Competitor.user_id == scoped_user_id))
     competitors = result.scalars().all()
 
     return [
@@ -171,6 +178,8 @@ async def list_competitors(
 @router.post("/recommend", response_model=RecommendCompetitorsResponse)
 async def recommend_competitors(
     request: RecommendCompetitorsRequest,
+    _rate_limit: None = Depends(rate_limit("competitor_recommend", limit=80, window_seconds=3600)),
+    auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -182,13 +191,14 @@ async def recommend_competitors(
 
     try:
         client = _get_youtube_client()
+        scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
         requested_window = request.page * request.limit
         search_limit = min(max(requested_window * 5, requested_window), 50)
         channels = client.search_channels(niche, max_results=search_limit)
 
         tracked_result = await db.execute(
             select(Competitor.external_id).where(
-                Competitor.user_id == request.user_id,
+                Competitor.user_id == scoped_user_id,
                 Competitor.platform == "youtube",
             )
         )
@@ -240,21 +250,23 @@ async def recommend_competitors(
     except HTTPException:
         raise
     except Exception:
-        logger.exception("Failed to recommend competitors for user %s", request.user_id)
+        logger.exception("Failed to recommend competitors for user %s", auth.user_id)
         raise HTTPException(status_code=500, detail="Failed to recommend competitors.")
 
 
 @router.delete("/{competitor_id}")
 async def remove_competitor(
     competitor_id: str,
-    user_id: str = Query(...),
+    user_id: Optional[str] = Query(default=None),
+    auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
     """Remove a competitor."""
+    scoped_user_id = ensure_user_scope(auth.user_id, user_id)
     result = await db.execute(
         select(Competitor).where(
             Competitor.id == competitor_id,
-            Competitor.user_id == user_id,
+            Competitor.user_id == scoped_user_id,
         )
     )
     comp = result.scalar_one_or_none()
@@ -271,14 +283,16 @@ async def remove_competitor(
 async def get_competitor_videos_endpoint(
     competitor_id: str,
     limit: int = 10,
-    user_id: str = Query(...),
+    user_id: Optional[str] = Query(default=None),
+    auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
     """Get videos for a competitor."""
+    scoped_user_id = ensure_user_scope(auth.user_id, user_id)
     result = await db.execute(
         select(Competitor).where(
             Competitor.id == competitor_id,
-            Competitor.user_id == user_id,
+            Competitor.user_id == scoped_user_id,
         )
     )
     comp = result.scalar_one_or_none()
@@ -292,9 +306,11 @@ async def get_competitor_videos_endpoint(
 @router.post("/blueprint")
 async def generate_competitor_blueprint(
     request: BlueprintRequest,
+    auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate a strategy blueprint based on competitors."""
     from services.blueprint import generate_blueprint_service
 
-    return await generate_blueprint_service(request.user_id, db)
+    scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
+    return await generate_blueprint_service(scoped_user_id, db)

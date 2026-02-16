@@ -7,12 +7,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from sqlalchemy import or_
 from sqlalchemy.future import select
 
 from config import settings, require_youtube_api_key
 from database import async_session_maker
 from models.audit import Audit
 from models.competitor import Competitor
+from models.profile import Profile
+from models.video import Video
+from models.video_metrics import VideoMetrics
 from ingestion.youtube import create_youtube_client_with_api_key
 from multimodal.audio import extract_audio, transcribe_audio
 from multimodal.llm import analyze_content
@@ -116,6 +120,35 @@ def _segment_field(segment: Any, field: str, default: Any) -> Any:
     if isinstance(segment, dict):
         return segment.get(field, default)
     return getattr(segment, field, default)
+
+
+def _extract_youtube_video_id(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    text = str(url).strip()
+    if not text:
+        return None
+
+    patterns = [
+        r"(?:v=)([A-Za-z0-9_-]{11})",
+        r"(?:youtu\.be/)([A-Za-z0-9_-]{11})",
+        r"(?:shorts/)([A-Za-z0-9_-]{11})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _median(values: List[float]) -> float:
+    if not values:
+        return 0.0
+    sorted_values = sorted(values)
+    mid = len(sorted_values) // 2
+    if len(sorted_values) % 2:
+        return float(sorted_values[mid])
+    return float((sorted_values[mid - 1] + sorted_values[mid]) / 2.0)
 
 
 def _normalize_transcript(
@@ -685,6 +718,155 @@ def _build_platform_metrics(
     }
 
 
+async def _load_true_platform_metrics_for_video(user_id: str, video_url: Optional[str]) -> Dict[str, Any]:
+    """Load latest persisted platform metrics for a specific user video URL."""
+    video_id = _extract_youtube_video_id(video_url)
+    if not video_id:
+        return {}
+
+    async with async_session_maker() as db:
+        result = await db.execute(
+            select(
+                VideoMetrics.views,
+                VideoMetrics.likes,
+                VideoMetrics.comments,
+                VideoMetrics.shares,
+                VideoMetrics.saves,
+                VideoMetrics.watch_time_hours,
+                VideoMetrics.avg_view_duration_s,
+                VideoMetrics.ctr,
+                VideoMetrics.retention_points_json,
+            )
+            .join(Video, Video.id == VideoMetrics.video_id)
+            .outerjoin(Profile, Profile.id == Video.profile_id)
+            .where(
+                Video.external_id == video_id,
+                Video.platform == "youtube",
+                or_(Profile.user_id == user_id, Profile.user_id.is_(None)),
+            )
+            .order_by(VideoMetrics.fetched_at.desc())
+            .limit(1)
+        )
+        row = result.first()
+
+    if not row:
+        return {}
+
+    retention_points = row[8] if isinstance(row[8], list) else []
+    return {
+        "views": _safe_int(row[0], 0),
+        "likes": _safe_int(row[1], 0),
+        "comments": _safe_int(row[2], 0),
+        "shares": _safe_int(row[3], 0),
+        "saves": _safe_int(row[4], 0),
+        "watch_time_hours": _safe_float(row[5], 0.0) if row[5] is not None else None,
+        "avg_view_duration_s": _safe_float(row[6], 0.0) if row[6] is not None else None,
+        "ctr": _safe_float(row[7], 0.0) if row[7] is not None else None,
+        "retention_points": retention_points,
+    }
+
+
+async def _collect_historical_performance(user_id: str, format_type: str) -> Dict[str, Any]:
+    """Build user historical baseline from persisted posted-video metrics."""
+    async with async_session_maker() as db:
+        result = await db.execute(
+            select(
+                Video.duration_s,
+                VideoMetrics.views,
+                VideoMetrics.likes,
+                VideoMetrics.comments,
+                VideoMetrics.shares,
+                VideoMetrics.saves,
+                VideoMetrics.avg_view_duration_s,
+                VideoMetrics.retention_points_json,
+            )
+            .join(VideoMetrics, VideoMetrics.video_id == Video.id)
+            .join(Profile, Profile.id == Video.profile_id)
+            .where(
+                Profile.user_id == user_id,
+                Video.platform == "youtube",
+                VideoMetrics.views > 0,
+            )
+            .order_by(VideoMetrics.fetched_at.desc())
+            .limit(120)
+        )
+        rows = result.all()
+
+    if not rows:
+        return {
+            "sample_size": 0,
+            "format_sample_size": 0,
+            "score": 0.0,
+            "confidence": "low",
+            "insufficient_data": True,
+            "summary": "No historical posted-video metrics found yet.",
+            "signals": [],
+        }
+
+    records: List[Dict[str, Any]] = []
+    for row in rows:
+        duration_s = _safe_int(row[0], 0)
+        row_format = _infer_format(duration_s)
+        views = _safe_float(row[1], 0.0)
+        likes = _safe_float(row[2], 0.0)
+        comments = _safe_float(row[3], 0.0)
+        shares = _safe_float(row[4], 0.0)
+        saves = _safe_float(row[5], 0.0)
+        avg_view_duration_s = _safe_float(row[6], 0.0)
+        retention_points = row[7] if isinstance(row[7], list) else []
+        weighted_rate = (likes + (comments * 2.0) + (shares * 3.0) + (saves * 3.0)) / max(views, 1.0)
+        records.append(
+            {
+                "format_type": row_format,
+                "views": views,
+                "weighted_rate": weighted_rate,
+                "avg_view_duration_s": avg_view_duration_s,
+                "has_retention": bool(retention_points),
+            }
+        )
+
+    filtered = records
+    format_sample_size = len(records)
+    if format_type in {"short_form", "long_form"}:
+        format_filtered = [row for row in records if row["format_type"] == format_type]
+        if format_filtered:
+            filtered = format_filtered
+            format_sample_size = len(format_filtered)
+
+    median_views = _median([row["views"] for row in filtered])
+    avg_weighted_rate = sum(row["weighted_rate"] for row in filtered) / max(len(filtered), 1)
+    avg_view_duration = sum(row["avg_view_duration_s"] for row in filtered) / max(len(filtered), 1)
+    retention_ratio = sum(1 for row in filtered if row["has_retention"]) / max(len(filtered), 1)
+
+    historical_score = _clamp(
+        min(median_views / 2500.0, 35.0)
+        + min(avg_weighted_rate * 1400.0, 35.0)
+        + min(avg_view_duration / 1.5, 20.0)
+        + (retention_ratio * 10.0)
+    )
+
+    confidence = "high" if format_sample_size >= 18 else "medium" if format_sample_size >= 8 else "low"
+    insufficient_data = format_sample_size < 5
+    return {
+        "sample_size": len(records),
+        "format_sample_size": format_sample_size,
+        "score": round(historical_score, 1),
+        "confidence": confidence,
+        "insufficient_data": insufficient_data,
+        "summary": (
+            "Historical baseline uses your posted video outcomes to calibrate prediction confidence."
+            if not insufficient_data
+            else "Historical baseline has limited samples; confidence is reduced until more posted data is ingested."
+        ),
+        "signals": [
+            f"Historical sample size: {len(records)} videos (format-matched: {format_sample_size})",
+            f"Median views: {round(median_views, 1)}",
+            f"Weighted engagement rate: {round(avg_weighted_rate, 4)}",
+            f"Retention-curve coverage: {round(retention_ratio * 100, 1)}%",
+        ],
+    }
+
+
 async def _collect_competitor_benchmark(user_id: str, format_type: str) -> Dict[str, Any]:
     async with async_session_maker() as db:
         result = await db.execute(
@@ -875,33 +1057,58 @@ async def _build_performance_prediction(
     next_actions = _build_next_actions(platform_score.get("detector_rankings", []))
     benchmark = await _collect_competitor_benchmark(user_id, format_type)
     competitor_metrics = _build_competitor_metrics(platform_score["score"], benchmark)
+    historical_metrics = await _collect_historical_performance(user_id, format_type)
 
-    combined_score = _clamp((competitor_metrics["score"] * 0.55) + (platform_score["score"] * 0.45))
+    has_historical = not historical_metrics.get("insufficient_data", True)
+    if has_historical:
+        weights = {
+            "competitor_metrics": 0.45,
+            "platform_metrics": 0.35,
+            "historical_metrics": 0.20,
+        }
+    else:
+        weights = {
+            "competitor_metrics": 0.55,
+            "platform_metrics": 0.45,
+            "historical_metrics": 0.0,
+        }
+
+    combined_score = _clamp(
+        (competitor_metrics["score"] * weights["competitor_metrics"])
+        + (platform_score["score"] * weights["platform_metrics"])
+        + (_safe_float(historical_metrics.get("score"), 0.0) * weights["historical_metrics"])
+    )
     score_band = _score_band(combined_score)
+    confidence_rank = {"low": 1, "medium": 2, "high": 3}
+    competitor_conf = str(competitor_metrics.get("confidence", "low"))
+    historical_conf = str(historical_metrics.get("confidence", "low"))
+    combined_conf_score = min(confidence_rank.get(competitor_conf, 1), confidence_rank.get(historical_conf, 1))
+    if not has_historical:
+        combined_conf_score = min(combined_conf_score, 2)
+    combined_confidence = "high" if combined_conf_score >= 3 else "medium" if combined_conf_score == 2 else "low"
+    insufficient_data_reasons: List[str] = []
+    if benchmark.get("sample_size", 0) < 8:
+        insufficient_data_reasons.append("Competitor benchmark sample is below 8 videos.")
+    if historical_metrics.get("insufficient_data"):
+        insufficient_data_reasons.append("Historical posted-video sample is below 5 format-matched videos.")
 
     return {
         "format_type": format_type,
         "duration_seconds": duration_seconds,
         "competitor_metrics": competitor_metrics,
         "platform_metrics": platform_score,
+        "historical_metrics": historical_metrics,
         "combined_metrics": {
             "score": round(combined_score, 1),
-            "confidence": (
-                "high"
-                if benchmark.get("sample_size", 0) >= 20
-                else "medium"
-                if benchmark.get("sample_size", 0) >= 8
-                else "low"
-            ),
+            "confidence": combined_confidence,
             "likelihood_band": score_band,
             "summary": (
                 "Combined prediction blends competitor benchmark score and platform quality score "
-                "to estimate near-term performance potential."
+                "plus historical posted-video performance calibration to estimate near-term performance potential."
             ),
-            "weights": {
-                "competitor_metrics": 0.55,
-                "platform_metrics": 0.45,
-            },
+            "weights": weights,
+            "insufficient_data": len(insufficient_data_reasons) > 0,
+            "insufficient_data_reasons": insufficient_data_reasons,
         },
         "repurpose_plan": _build_repurpose_plan(video_analysis, detectors, format_type),
         "next_actions": next_actions,
@@ -978,6 +1185,21 @@ async def process_video_audit(
             input_payload = audit.input_json if isinstance(audit.input_json, dict) else {}
             retention_points = input_payload.get("retention_points", []) or []
             platform_metrics_input = input_payload.get("platform_metrics", {}) or {}
+            persisted_true_metrics = await _load_true_platform_metrics_for_video(
+                audit.user_id,
+                video_url if source_mode == "url" else None,
+            )
+            if persisted_true_metrics:
+                logger.info(
+                    "Audit %s loaded persisted true metrics for URL video id",
+                    audit_id,
+                )
+                if not retention_points and isinstance(persisted_true_metrics.get("retention_points"), list):
+                    retention_points = persisted_true_metrics.get("retention_points", [])
+                platform_metrics_input = {
+                    **persisted_true_metrics,
+                    **platform_metrics_input,
+                }
             explicit_detectors = _extract_explicit_detectors(
                 transcript=transcript,
                 video_analysis=video_analysis,
@@ -1051,3 +1273,20 @@ async def _update_status(db, audit_id: str, status: str, progress: int):
         audit.status = status
         audit.progress = str(progress)
         await db.commit()
+
+
+def process_video_audit_job(
+    audit_id: str,
+    video_url: Optional[str] = None,
+    upload_path: Optional[str] = None,
+    source_mode: str = "url",
+):
+    """RQ worker entrypoint for running the async audit pipeline."""
+    asyncio.run(
+        process_video_audit(
+            audit_id=audit_id,
+            video_url=video_url,
+            upload_path=upload_path,
+            source_mode=source_mode,
+        )
+    )

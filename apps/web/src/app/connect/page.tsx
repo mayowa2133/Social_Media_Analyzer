@@ -4,6 +4,7 @@ import Link from "next/link";
 import { signIn, useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { clearStoredAuthSession } from "@/lib/api";
 
 export default function ConnectPage() {
     const { data: session, status } = useSession();
@@ -17,6 +18,12 @@ export default function ConnectPage() {
         const value = new URLSearchParams(window.location.search).get("error");
         setAuthError(value);
     }, []);
+
+    useEffect(() => {
+        if (status === "unauthenticated") {
+            clearStoredAuthSession();
+        }
+    }, [status]);
 
     const errorMessage =
         authError === "OAuthSignin" || authError === "google"

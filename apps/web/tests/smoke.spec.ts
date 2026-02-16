@@ -93,7 +93,21 @@ function buildMockReport(auditId: string) {
                 weights: {
                     competitor_metrics: 0.55,
                     platform_metrics: 0.45,
+                    historical_metrics: 0.0,
                 },
+                insufficient_data: true,
+                insufficient_data_reasons: [
+                    "Historical posted-video sample is below 5 format-matched videos.",
+                ],
+            },
+            historical_metrics: {
+                sample_size: 3,
+                format_sample_size: 2,
+                score: 68,
+                confidence: "low",
+                insufficient_data: true,
+                summary: "Historical baseline has limited samples; confidence is reduced.",
+                signals: ["Historical sample size: 3 videos"],
             },
             next_actions: [
                 {
@@ -363,8 +377,16 @@ async function installApiMocks(page: Page) {
     });
 }
 
+async function installLocalAuthState(page: Page) {
+    await page.addInitScript(() => {
+        localStorage.setItem("spc_user_id", "smoke-user");
+        localStorage.setItem("spc_backend_session_token", "smoke-session-token");
+    });
+}
+
 test("connect -> competitors -> audit -> report smoke flow", async ({ page }) => {
     await installApiMocks(page);
+    await installLocalAuthState(page);
 
     await page.goto("/connect");
     await expect(page.getByRole("heading", { name: "Connect Your Channels" })).toBeVisible();
@@ -392,6 +414,7 @@ test("connect -> competitors -> audit -> report smoke flow", async ({ page }) =>
 
 test("upload -> score -> recommendations render smoke flow", async ({ page }) => {
     await installApiMocks(page);
+    await installLocalAuthState(page);
 
     await page.goto("/audit/new");
     await page.getByRole("button", { name: "Upload" }).click();
