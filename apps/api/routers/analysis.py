@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from ingestion.youtube import create_youtube_client_with_api_key
-from config import settings
+from config import require_youtube_api_key
 from analysis.metrics import ChannelAnalyzer
 from analysis.models import DiagnosisResult
 from database import get_db
@@ -28,12 +28,10 @@ logger = logging.getLogger(__name__)
 
 def _get_youtube_client():
     """Get YouTube client."""
-    api_key = settings.YOUTUBE_API_KEY if hasattr(settings, "YOUTUBE_API_KEY") else settings.GOOGLE_CLIENT_SECRET
-    if not api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="YouTube API key not configured"
-        )
+    try:
+        api_key = require_youtube_api_key()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     return create_youtube_client_with_api_key(api_key)
 
 
@@ -58,7 +56,7 @@ class RetentionPoint(BaseModel):
 
 
 class PlatformMetricsIngestRequest(BaseModel):
-    user_id: str = "test-user"
+    user_id: str
     platform: str = "youtube"
     video_external_id: str
     video_url: Optional[str] = None
@@ -161,8 +159,9 @@ async def diagnose_channel(
 
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Failed to generate diagnosis for user %s", request.user_id)
+        raise HTTPException(status_code=500, detail="Failed to generate diagnosis.")
 
 
 @router.post("/ingest/platform_metrics", response_model=PlatformMetricsIngestResponse)
@@ -260,5 +259,6 @@ async def ingest_platform_metrics(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Failed to ingest platform metrics for user %s", request.user_id)
+        raise HTTPException(status_code=500, detail="Failed to ingest platform metrics.")

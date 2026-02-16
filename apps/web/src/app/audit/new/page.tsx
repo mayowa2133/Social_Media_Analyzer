@@ -17,6 +17,21 @@ function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+interface RetentionRowInput {
+    time: string;
+    retention: string;
+}
+
+interface GuidedPlatformMetricsInput {
+    views: string;
+    likes: string;
+    comments: string;
+    shares: string;
+    saves: string;
+    avg_view_duration_s: string;
+    ctr: string;
+}
+
 export default function NewAuditPage() {
     const router = useRouter();
     const { data: session } = useSession();
@@ -25,6 +40,16 @@ export default function NewAuditPage() {
     const [videoFile, setVideoFile] = useState<File | null>(null);
     const [retentionJson, setRetentionJson] = useState("");
     const [platformMetricsJson, setPlatformMetricsJson] = useState("");
+    const [retentionRows, setRetentionRows] = useState<RetentionRowInput[]>([{ time: "", retention: "" }]);
+    const [guidedMetrics, setGuidedMetrics] = useState<GuidedPlatformMetricsInput>({
+        views: "",
+        likes: "",
+        comments: "",
+        shares: "",
+        saves: "",
+        avg_view_duration_s: "",
+        ctr: "",
+    });
     const [running, setRunning] = useState(false);
     const [progressMessage, setProgressMessage] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -48,6 +73,29 @@ export default function NewAuditPage() {
         }
 
         return undefined;
+    }
+
+    function updateRetentionRow(index: number, key: keyof RetentionRowInput, value: string) {
+        setRetentionRows((prev) =>
+            prev.map((row, rowIdx) => (rowIdx === index ? { ...row, [key]: value } : row))
+        );
+    }
+
+    function addRetentionRow() {
+        setRetentionRows((prev) => [...prev, { time: "", retention: "" }]);
+    }
+
+    function removeRetentionRow(index: number) {
+        setRetentionRows((prev) => {
+            if (prev.length <= 1) {
+                return [{ time: "", retention: "" }];
+            }
+            return prev.filter((_, rowIdx) => rowIdx !== index);
+        });
+    }
+
+    function updateGuidedMetric(field: keyof GuidedPlatformMetricsInput, value: string) {
+        setGuidedMetrics((prev) => ({ ...prev, [field]: value }));
     }
 
     async function handleRunAudit(e: React.FormEvent) {
@@ -77,6 +125,51 @@ export default function NewAuditPage() {
                   ctr?: number;
               }
             | undefined;
+        const parsedRetentionRows: RetentionPoint[] = [];
+        for (const row of retentionRows) {
+            const timeRaw = row.time.trim();
+            const retentionRaw = row.retention.trim();
+            if (!timeRaw && !retentionRaw) {
+                continue;
+            }
+            const time = Number(timeRaw);
+            const retention = Number(retentionRaw);
+            if (!Number.isFinite(time) || !Number.isFinite(retention)) {
+                setError("Retention row values must be numeric.");
+                return;
+            }
+            parsedRetentionRows.push({ time, retention });
+        }
+        if (parsedRetentionRows.length > 0) {
+            retentionPoints = parsedRetentionRows;
+        }
+
+        const guidedPlatformMetrics: Record<string, number> = {};
+        const numericFields: Array<keyof GuidedPlatformMetricsInput> = [
+            "views",
+            "likes",
+            "comments",
+            "shares",
+            "saves",
+            "avg_view_duration_s",
+            "ctr",
+        ];
+        for (const field of numericFields) {
+            const raw = guidedMetrics[field].trim();
+            if (!raw) {
+                continue;
+            }
+            const numericValue = Number(raw);
+            if (!Number.isFinite(numericValue)) {
+                setError(`Platform metric '${field}' must be numeric.`);
+                return;
+            }
+            guidedPlatformMetrics[field] = numericValue;
+        }
+        if (Object.keys(guidedPlatformMetrics).length > 0) {
+            platformMetrics = guidedPlatformMetrics;
+        }
+
         if (retentionJson.trim()) {
             try {
                 const parsed = JSON.parse(retentionJson);
@@ -95,7 +188,10 @@ export default function NewAuditPage() {
                 if (Array.isArray(parsed) || typeof parsed !== "object" || parsed === null) {
                     throw new Error("Platform metrics JSON must be an object.");
                 }
-                platformMetrics = parsed;
+                platformMetrics = {
+                    ...(platformMetrics || {}),
+                    ...parsed,
+                };
             } catch (err: any) {
                 setError(err.message || "Invalid platform metrics JSON.");
                 return;
@@ -127,10 +223,11 @@ export default function NewAuditPage() {
             }
 
             setProgressMessage("Audit started. Processing video...");
-
-            for (let i = 0; i < 90; i++) {
-                await sleep(2000);
-                const status = await getAuditStatus(run.audit_id);
+            const maxAttempts = sourceMode === "upload" ? 180 : 120;
+            let pollDelayMs = sourceMode === "upload" ? 2500 : 2000;
+            for (let i = 0; i < maxAttempts; i++) {
+                await sleep(pollDelayMs);
+                const status = await getAuditStatus(run.audit_id, userId);
                 setProgressMessage(`Status: ${status.status} (${status.progress}%)`);
 
                 if (status.status === "completed") {
@@ -140,9 +237,10 @@ export default function NewAuditPage() {
                 if (status.status === "failed") {
                     throw new Error(status.error || "Audit failed.");
                 }
+                pollDelayMs = Math.min(Math.round(pollDelayMs * 1.08), 5000);
             }
 
-            throw new Error("Audit timed out. Try again.");
+            throw new Error("Audit is still processing. Check the dashboard in a few minutes.");
         } catch (err: any) {
             setError(err.message || "Failed to run audit.");
         } finally {
@@ -291,15 +389,62 @@ export default function NewAuditPage() {
                                         <label className="text-xs font-semibold uppercase tracking-wide text-[#626262]">
                                             Retention Points (Optional)
                                         </label>
-                                        <span className="text-[11px] text-[#888]">JSON array · `{`{ time, retention }`}`</span>
+                                        <span className="text-[11px] text-[#888]">Guided rows + advanced JSON fallback</span>
                                     </div>
-                                    <textarea
-                                        value={retentionJson}
-                                        onChange={(e) => setRetentionJson(e.target.value)}
-                                        placeholder='[{"time": 0, "retention": 100}, {"time": 5, "retention": 78}]'
-                                        className="min-h-[110px] w-full rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 font-mono text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
-                                        disabled={running}
-                                    />
+
+                                    <div className="space-y-2">
+                                        {retentionRows.map((row, idx) => (
+                                            <div key={idx} className="grid grid-cols-[1fr_1fr_auto] gap-2">
+                                                <input
+                                                    value={row.time}
+                                                    onChange={(e) => updateRetentionRow(idx, "time", e.target.value)}
+                                                    placeholder="time (s)"
+                                                    className="rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
+                                                    disabled={running}
+                                                />
+                                                <input
+                                                    value={row.retention}
+                                                    onChange={(e) => updateRetentionRow(idx, "retention", e.target.value)}
+                                                    placeholder="retention (%)"
+                                                    className="rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
+                                                    disabled={running}
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => removeRetentionRow(idx)}
+                                                    className="rounded-xl border border-[#d9d9d9] bg-[#f3f3f3] px-3 py-2 text-xs text-[#555]"
+                                                    disabled={running}
+                                                >
+                                                    Remove
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    <div className="mt-3 flex justify-between">
+                                        <button
+                                            type="button"
+                                            onClick={addRetentionRow}
+                                            className="rounded-xl border border-[#d9d9d9] bg-[#f7f7f7] px-3 py-1.5 text-xs text-[#444]"
+                                            disabled={running}
+                                        >
+                                            Add retention row
+                                        </button>
+                                        <span className="text-[11px] text-[#888]">time + retention</span>
+                                    </div>
+
+                                    <div className="mt-3">
+                                        <label className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-[#777]">
+                                            Advanced JSON Override (Optional)
+                                        </label>
+                                        <textarea
+                                            value={retentionJson}
+                                            onChange={(e) => setRetentionJson(e.target.value)}
+                                            placeholder='[{"time": 0, "retention": 100}, {"time": 5, "retention": 78}]'
+                                            className="min-h-[90px] w-full rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 font-mono text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
+                                            disabled={running}
+                                        />
+                                    </div>
                                 </div>
 
                                 <div className="rounded-2xl border border-[#dcdcdc] bg-white p-4 shadow-[0_10px_30px_rgba(0,0,0,0.05)]">
@@ -307,15 +452,72 @@ export default function NewAuditPage() {
                                         <label className="text-xs font-semibold uppercase tracking-wide text-[#626262]">
                                             Platform Metrics (Optional)
                                         </label>
-                                        <span className="text-[11px] text-[#888]">JSON object</span>
+                                        <span className="text-[11px] text-[#888]">Guided fields + advanced JSON fallback</span>
                                     </div>
-                                    <textarea
-                                        value={platformMetricsJson}
-                                        onChange={(e) => setPlatformMetricsJson(e.target.value)}
-                                        placeholder='{"views": 120000, "likes": 4600, "comments": 320, "shares": 210, "saves": 580, "avg_view_duration_s": 27.5, "ctr": 0.068}'
-                                        className="min-h-[110px] w-full rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 font-mono text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
-                                        disabled={running}
-                                    />
+                                    <div className="grid gap-2 md:grid-cols-2">
+                                        <input
+                                            value={guidedMetrics.views}
+                                            onChange={(e) => updateGuidedMetric("views", e.target.value)}
+                                            placeholder="views"
+                                            className="rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
+                                            disabled={running}
+                                        />
+                                        <input
+                                            value={guidedMetrics.likes}
+                                            onChange={(e) => updateGuidedMetric("likes", e.target.value)}
+                                            placeholder="likes"
+                                            className="rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
+                                            disabled={running}
+                                        />
+                                        <input
+                                            value={guidedMetrics.comments}
+                                            onChange={(e) => updateGuidedMetric("comments", e.target.value)}
+                                            placeholder="comments"
+                                            className="rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
+                                            disabled={running}
+                                        />
+                                        <input
+                                            value={guidedMetrics.shares}
+                                            onChange={(e) => updateGuidedMetric("shares", e.target.value)}
+                                            placeholder="shares"
+                                            className="rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
+                                            disabled={running}
+                                        />
+                                        <input
+                                            value={guidedMetrics.saves}
+                                            onChange={(e) => updateGuidedMetric("saves", e.target.value)}
+                                            placeholder="saves"
+                                            className="rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
+                                            disabled={running}
+                                        />
+                                        <input
+                                            value={guidedMetrics.avg_view_duration_s}
+                                            onChange={(e) => updateGuidedMetric("avg_view_duration_s", e.target.value)}
+                                            placeholder="avg_view_duration_s"
+                                            className="rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
+                                            disabled={running}
+                                        />
+                                        <input
+                                            value={guidedMetrics.ctr}
+                                            onChange={(e) => updateGuidedMetric("ctr", e.target.value)}
+                                            placeholder="ctr (e.g. 0.067)"
+                                            className="rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none md:col-span-2"
+                                            disabled={running}
+                                        />
+                                    </div>
+
+                                    <div className="mt-3">
+                                        <label className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-[#777]">
+                                            Advanced JSON Override (Optional)
+                                        </label>
+                                        <textarea
+                                            value={platformMetricsJson}
+                                            onChange={(e) => setPlatformMetricsJson(e.target.value)}
+                                            placeholder='{"views": 120000, "likes": 4600, "comments": 320, "shares": 210, "saves": 580, "avg_view_duration_s": 27.5, "ctr": 0.068}'
+                                            className="min-h-[90px] w-full rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 font-mono text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
+                                            disabled={running}
+                                        />
+                                    </div>
                                 </div>
                             </div>
                         </section>

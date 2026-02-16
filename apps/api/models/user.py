@@ -26,3 +26,9 @@ class User(Base):
     competitors = relationship("Competitor", back_populates="user", cascade="all, delete-orphan")
     audits = relationship("Audit", back_populates="user", cascade="all, delete-orphan")
     uploads = relationship("Upload", back_populates="user", cascade="all, delete-orphan")
+    blueprint_snapshot = relationship(
+        "BlueprintSnapshot",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )

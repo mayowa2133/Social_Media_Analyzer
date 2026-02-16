@@ -21,6 +21,14 @@ export function BlueprintDisplay({ blueprint, loading }: BlueprintDisplayProps) 
         );
     }
 
+    const stagePercent = (value: number | undefined) => {
+        const normalized = Number(value);
+        if (!Number.isFinite(normalized)) {
+            return 0;
+        }
+        return Math.round(normalized * 100);
+    };
+
     const renderFormatHookProfile = (profile: HookFormatProfile) => (
         <div key={profile.format} className="rounded-xl border border-[#dddddd] bg-[#fafafa] p-4">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -205,6 +213,66 @@ export function BlueprintDisplay({ blueprint, loading }: BlueprintDisplayProps) 
                 </div>
             )}
 
+            {blueprint.transcript_quality && (
+                <div className="rounded-2xl border border-[#dcdcdc] bg-white p-6">
+                    <h3 className="mb-2 flex items-center gap-2 text-xl font-bold text-[#232323]">
+                        <span>📝</span> Transcript Quality
+                    </h3>
+                    <p className="mb-4 text-sm text-[#666]">
+                        Coverage: {Math.round(blueprint.transcript_quality.transcript_coverage_ratio * 100)}% ·
+                        Fallback ratio: {Math.round(blueprint.transcript_quality.fallback_ratio * 100)}% ·
+                        Sample size: {blueprint.transcript_quality.sample_size}
+                    </p>
+
+                    {Object.keys(blueprint.transcript_quality.by_source).length > 0 && (
+                        <div className="mb-3 flex flex-wrap gap-2">
+                            {Object.entries(blueprint.transcript_quality.by_source).map(([source, count]) => (
+                                <span key={source} className="rounded-full border border-[#dfdfdf] bg-[#f6f6f6] px-2 py-1 text-[11px] text-[#555]">
+                                    {source.replaceAll("_", " ")}: {count}
+                                </span>
+                            ))}
+                        </div>
+                    )}
+
+                    {blueprint.transcript_quality.notes.length > 0 && (
+                        <ul className="space-y-1 text-xs text-[#666]">
+                            {blueprint.transcript_quality.notes.map((note, idx) => (
+                                <li key={idx}>• {note}</li>
+                            ))}
+                        </ul>
+                    )}
+                </div>
+            )}
+
+            {blueprint.velocity_actions && blueprint.velocity_actions.length > 0 && (
+                <div className="rounded-2xl border border-[#dcdcdc] bg-white p-6">
+                    <h3 className="mb-2 flex items-center gap-2 text-xl font-bold text-[#232323]">
+                        <span>⚡</span> Do This Next
+                    </h3>
+                    <p className="mb-4 text-sm text-[#666]">
+                        Prioritized actions based on competitor velocity patterns and framework gaps.
+                    </p>
+                    <div className="space-y-3">
+                        {blueprint.velocity_actions.map((action, idx) => (
+                            <div key={idx} className="rounded-lg border border-[#e1e1e1] bg-[#fafafa] p-4">
+                                <p className="text-sm font-semibold text-[#202020]">{action.title}</p>
+                                <p className="mt-1 text-xs text-[#666]">{action.why}</p>
+                                <p className="mt-1 text-[11px] text-[#717171]">
+                                    Target metric: {action.target_metric} · Expected effect: {action.expected_effect}
+                                </p>
+                                {action.execution_steps.length > 0 && (
+                                    <ul className="mt-2 space-y-1 text-[11px] text-[#555]">
+                                        {action.execution_steps.map((step, stepIdx) => (
+                                            <li key={stepIdx}>• {step}</li>
+                                        ))}
+                                    </ul>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
             {blueprint.framework_playbook && (
                 <div className="rounded-2xl border border-[#dcdcdc] bg-white p-6">
                     <h3 className="mb-2 flex items-center gap-2 text-xl font-bold text-[#232323]">
@@ -214,19 +282,19 @@ export function BlueprintDisplay({ blueprint, loading }: BlueprintDisplayProps) 
                     <div className="mb-4 grid gap-2 md:grid-cols-4">
                         <div className="rounded-lg border border-[#e1e1e1] bg-[#fafafa] p-3 text-center">
                             <p className="text-[11px] text-[#777]">Authority Hook</p>
-                            <p className="text-sm font-semibold text-[#202020]">{Math.round(blueprint.framework_playbook.stage_adoption.authority_hook * 100)}%</p>
+                            <p className="text-sm font-semibold text-[#202020]">{stagePercent(blueprint.framework_playbook.stage_adoption.authority_hook)}%</p>
                         </div>
                         <div className="rounded-lg border border-[#e1e1e1] bg-[#fafafa] p-3 text-center">
                             <p className="text-[11px] text-[#777]">Fast Proof</p>
-                            <p className="text-sm font-semibold text-[#202020]">{Math.round(blueprint.framework_playbook.stage_adoption.fast_proof * 100)}%</p>
+                            <p className="text-sm font-semibold text-[#202020]">{stagePercent(blueprint.framework_playbook.stage_adoption.fast_proof)}%</p>
                         </div>
                         <div className="rounded-lg border border-[#e1e1e1] bg-[#fafafa] p-3 text-center">
                             <p className="text-[11px] text-[#777]">Framework Steps</p>
-                            <p className="text-sm font-semibold text-[#202020]">{Math.round(blueprint.framework_playbook.stage_adoption.framework_steps * 100)}%</p>
+                            <p className="text-sm font-semibold text-[#202020]">{stagePercent(blueprint.framework_playbook.stage_adoption.framework_steps)}%</p>
                         </div>
                         <div className="rounded-lg border border-[#e1e1e1] bg-[#fafafa] p-3 text-center">
                             <p className="text-[11px] text-[#777]">Open Loops</p>
-                            <p className="text-sm font-semibold text-[#202020]">{Math.round(blueprint.framework_playbook.stage_adoption.open_loop * 100)}%</p>
+                            <p className="text-sm font-semibold text-[#202020]">{stagePercent(blueprint.framework_playbook.stage_adoption.open_loop)}%</p>
                         </div>
                     </div>
 

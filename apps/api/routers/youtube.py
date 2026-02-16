@@ -8,11 +8,13 @@ from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
 import re
+import logging
 
-from config import settings
+from config import require_youtube_api_key
 from database import get_db
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 # ==================== Pydantic Models ====================
@@ -76,13 +78,11 @@ class ResolveChannelResponse(BaseModel):
 def _get_youtube_client():
     """Get YouTube client using API key."""
     from ingestion.youtube import create_youtube_client_with_api_key
-    
-    api_key = settings.YOUTUBE_API_KEY if hasattr(settings, 'YOUTUBE_API_KEY') else settings.GOOGLE_CLIENT_SECRET
-    if not api_key:
-        raise HTTPException(
-            status_code=500, 
-            detail="YouTube API key not configured"
-        )
+
+    try:
+        api_key = require_youtube_api_key()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     return create_youtube_client_with_api_key(api_key)
 
 
@@ -111,8 +111,9 @@ async def resolve_channel(request: ResolveChannelRequest) -> ResolveChannelRespo
         title = channel_info.get("title") if channel_info else None
         
         return ResolveChannelResponse(channel_id=channel_id, title=title)
-    except Exception as e:
-        return ResolveChannelResponse(error=str(e))
+    except Exception:
+        logger.exception("Failed to resolve YouTube channel url")
+        return ResolveChannelResponse(error="Failed to resolve channel")
 
 
 @router.get("/channel/{channel_id}")
@@ -137,8 +138,9 @@ async def get_channel_info(channel_id: str) -> ChannelInfo:
         )
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Failed to load channel info for channel_id=%s", channel_id)
+        raise HTTPException(status_code=500, detail="Failed to load channel info.")
 
 
 @router.get("/channel/{channel_id}/videos")
@@ -178,8 +180,9 @@ async def get_channel_videos(
             ))
         
         return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Failed to load channel videos for channel_id=%s", channel_id)
+        raise HTTPException(status_code=500, detail="Failed to load channel videos.")
 
 
 # Competitor Management moved to routers/competitor.py

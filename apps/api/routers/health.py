@@ -3,6 +3,7 @@ Health check endpoints.
 """
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as redis
 
@@ -22,6 +23,7 @@ async def health_check():
         "api": "up",
         "database": "unknown",
         "redis": "unknown",
+        "youtube_api_key": "configured" if settings.YOUTUBE_API_KEY else "missing",
     }
     
     # Check database connection
@@ -51,6 +53,15 @@ async def health_check():
 @router.get("/health/ready")
 async def readiness_check():
     """Kubernetes-style readiness probe."""
+    missing = []
+    if not settings.YOUTUBE_API_KEY:
+        missing.append("YOUTUBE_API_KEY")
+
+    if missing:
+        return JSONResponse(
+            status_code=503,
+            content={"ready": False, "missing": missing},
+        )
     return {"ready": True}
 
 

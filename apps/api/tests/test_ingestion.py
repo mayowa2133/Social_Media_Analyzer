@@ -143,14 +143,20 @@ async def test_add_competitor(client, mock_youtube_client):
 
     app.dependency_overrides[get_db] = override_get_db
     try:
-        response = await client.post("/competitors/", json={"channel_url": "http://youtube.com/valid"})
+        response = await client.post(
+            "/competitors/",
+            json={"channel_url": "http://youtube.com/valid", "user_id": "test-user"},
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["channel_id"] == "UC_MOCK_CHANNEL_ID"
         assert data["title"] == "Mock Channel"
 
         # Duplicate competitor should be rejected.
-        response = await client.post("/competitors/", json={"channel_url": "http://youtube.com/valid"})
+        response = await client.post(
+            "/competitors/",
+            json={"channel_url": "http://youtube.com/valid", "user_id": "test-user"},
+        )
         assert response.status_code == 400
         assert "already added" in response.json()["detail"]
     finally:
@@ -239,5 +245,80 @@ async def test_recommend_competitors(client, mock_youtube_client):
         assert len(data["recommendations"]) == 1
         assert data["recommendations"][0]["channel_id"] == "UC_EXISTING_CHANNEL"
         assert data["recommendations"][0]["already_tracked"] is True
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.mark.asyncio
+async def test_remove_competitor_requires_user_scope(client):
+    """Delete competitor endpoint must include user scoping."""
+    response = await client.delete("/competitors/comp-123")
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_remove_competitor_with_user_scope(client):
+    """Delete competitor removes only when scoped by user_id."""
+
+    class _Result:
+        def __init__(self, value):
+            self._value = value
+
+        def scalar_one_or_none(self):
+            return self._value
+
+    competitor = MagicMock()
+    mock_db = MagicMock()
+    mock_db.execute = AsyncMock(return_value=_Result(competitor))
+    mock_db.delete = AsyncMock()
+    mock_db.commit = AsyncMock()
+
+    async def override_get_db():
+        yield mock_db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = await client.delete("/competitors/comp-123?user_id=test-user")
+        assert response.status_code == 200
+        assert response.json()["message"] == "Competitor removed"
+        mock_db.delete.assert_awaited_once_with(competitor)
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.mark.asyncio
+async def test_get_competitor_videos_requires_user_scope(client):
+    """Competitor videos endpoint must include user scoping."""
+    response = await client.get("/competitors/comp-123/videos")
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_competitor_videos_with_user_scope(client, mock_youtube_client):
+    """Competitor videos endpoint returns videos when scoped by user_id."""
+
+    class _Result:
+        def __init__(self, value):
+            self._value = value
+
+        def scalar_one_or_none(self):
+            return self._value
+
+    competitor = MagicMock()
+    competitor.external_id = "UC_MOCK_CHANNEL_ID"
+
+    mock_db = MagicMock()
+    mock_db.execute = AsyncMock(return_value=_Result(competitor))
+
+    async def override_get_db():
+        yield mock_db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = await client.get("/competitors/comp-123/videos?user_id=test-user&limit=2")
+        assert response.status_code == 200
+        videos = response.json()
+        assert len(videos) == 2
+        assert videos[0]["video_id"] == "video1"
     finally:
         app.dependency_overrides.pop(get_db, None)

@@ -4,6 +4,8 @@ Audit router for running full audits and retrieving reports.
 
 import os
 import uuid
+import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional, Literal
 
@@ -20,6 +22,7 @@ from models.user import User
 from services.audit import process_video_audit
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 MAX_VIDEO_UPLOAD_BYTES = 300 * 1024 * 1024  # 300 MB
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
@@ -48,7 +51,7 @@ class CreateAuditRequest(BaseModel):
     upload_id: Optional[str] = None
     retention_points: Optional[List[RetentionPoint]] = None
     platform_metrics: Optional[PlatformMetricsInput] = None
-    user_id: str = "test-user"  # Optional for MVP
+    user_id: str
 
 
 class AuditStatusResponse(BaseModel):
@@ -84,10 +87,29 @@ async def _ensure_user(db: AsyncSession, user_id: str) -> User:
     return user
 
 
+def _cleanup_stale_upload_files() -> None:
+    """Best-effort cleanup of old uploaded files to limit disk growth."""
+    retention_hours = max(int(settings.AUDIT_UPLOAD_RETENTION_HOURS), 1)
+    root = Path(settings.AUDIT_UPLOAD_DIR)
+    if not root.exists():
+        return
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=retention_hours)
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            if mtime < cutoff:
+                path.unlink(missing_ok=True)
+        except Exception as exc:
+            logger.warning("Could not cleanup stale upload file %s: %s", path, exc)
+
+
 @router.post("/upload", response_model=UploadVideoResponse)
 async def upload_audit_video(
     file: UploadFile = File(...),
-    user_id: str = Form(default="test-user"),
+    user_id: str = Form(...),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a local video file for audit processing."""
@@ -139,6 +161,7 @@ async def upload_audit_video(
     )
     db.add(upload)
     await db.commit()
+    _cleanup_stale_upload_files()
 
     return UploadVideoResponse(
         upload_id=upload_id,
@@ -215,7 +238,7 @@ async def run_multimodal_audit(
 
 @router.get("/")
 async def list_audits(
-    user_id: str = Query(default="test-user"),
+    user_id: str = Query(...),
     limit: int = Query(default=20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
@@ -239,9 +262,18 @@ async def list_audits(
     ]
 
 @router.get("/{audit_id}")
-async def get_audit_status(audit_id: str, db: AsyncSession = Depends(get_db)):
+async def get_audit_status(
+    audit_id: str,
+    user_id: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
     """Get status of an audit."""
-    result = await db.execute(select(Audit).where(Audit.id == audit_id))
+    result = await db.execute(
+        select(Audit).where(
+            Audit.id == audit_id,
+            Audit.user_id == user_id,
+        )
+    )
     audit = result.scalar_one_or_none()
     
     if not audit:

@@ -92,3 +92,9 @@ async def test_generate_blueprint_includes_velocity_framework_and_repurpose(blue
     assert isinstance(blueprint["winner_pattern_signals"]["top_topics_by_velocity"], list)
     assert isinstance(blueprint["framework_playbook"]["stage_adoption"], dict)
     assert "youtube_shorts" in blueprint["repurpose_plan"]
+    assert "transcript_quality" in blueprint
+    assert blueprint["transcript_quality"]["sample_size"] > 0
+    assert isinstance(blueprint["transcript_quality"]["by_source"], dict)
+    assert "velocity_actions" in blueprint
+    assert isinstance(blueprint["velocity_actions"], list)
+    assert len(blueprint["velocity_actions"]) > 0

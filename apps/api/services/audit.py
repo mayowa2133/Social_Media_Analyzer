@@ -5,11 +5,11 @@ import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.future import select
 
-from config import settings
+from config import settings, require_youtube_api_key
 from database import async_session_maker
 from models.audit import Audit
 from models.competitor import Competitor
@@ -21,12 +21,47 @@ from multimodal.video import download_video, extract_frames, get_video_duration_
 logger = logging.getLogger(__name__)
 
 SHORT_FORM_MAX_SECONDS = 60
+DETECTOR_ORDER = [
+    "time_to_value",
+    "open_loops",
+    "dead_zones",
+    "pattern_interrupts",
+    "cta_style",
+]
+DETECTOR_LABELS = {
+    "time_to_value": "Time to Value",
+    "open_loops": "Open Loops",
+    "dead_zones": "Dead Zones",
+    "pattern_interrupts": "Pattern Interrupts",
+    "cta_style": "CTA Style",
+}
+DETECTOR_TARGET_SCORES = {
+    "time_to_value": 85.0,
+    "open_loops": 78.0,
+    "dead_zones": 82.0,
+    "pattern_interrupts": 80.0,
+    "cta_style": 76.0,
+}
+DETECTOR_WEIGHT_MAP = {
+    "short_form": {
+        "time_to_value": 0.32,
+        "open_loops": 0.16,
+        "dead_zones": 0.22,
+        "pattern_interrupts": 0.20,
+        "cta_style": 0.10,
+    },
+    "long_form": {
+        "time_to_value": 0.24,
+        "open_loops": 0.14,
+        "dead_zones": 0.30,
+        "pattern_interrupts": 0.18,
+        "cta_style": 0.14,
+    },
+}
 
 
 def _get_youtube_client():
-    api_key = settings.YOUTUBE_API_KEY or settings.GOOGLE_CLIENT_SECRET
-    if not api_key:
-        raise ValueError("YouTube API key not configured")
+    api_key = require_youtube_api_key()
     return create_youtube_client_with_api_key(api_key)
 
 
@@ -338,11 +373,198 @@ def _build_repurpose_plan(
     }
 
 
+def _detector_weights_for_format(format_type: str) -> Dict[str, float]:
+    if format_type == "short_form":
+        return DETECTOR_WEIGHT_MAP["short_form"]
+    if format_type == "long_form":
+        return DETECTOR_WEIGHT_MAP["long_form"]
+
+    short = DETECTOR_WEIGHT_MAP["short_form"]
+    long = DETECTOR_WEIGHT_MAP["long_form"]
+    return {
+        key: round((short[key] + long[key]) / 2.0, 3)
+        for key in DETECTOR_ORDER
+    }
+
+
+def _detector_priority(impact: float) -> str:
+    if impact >= 18.0:
+        return "critical"
+    if impact >= 12.0:
+        return "high"
+    if impact >= 7.0:
+        return "medium"
+    return "low"
+
+
+def _detector_evidence_and_edits(
+    detector_key: str,
+    detector_payload: Dict[str, Any],
+    format_type: str,
+) -> Tuple[List[str], List[str]]:
+    if detector_key == "time_to_value":
+        seconds = _safe_float(detector_payload.get("seconds"), 0.0)
+        return (
+            [
+                f"First value lands at {round(seconds, 2)}s.",
+                f"Assessment is '{detector_payload.get('assessment', 'unknown')}'.",
+                "Earlier payoff consistently improves hold in the first 3 seconds.",
+            ],
+            [
+                "Rewrite the first spoken line as outcome + proof in one sentence.",
+                "Place strongest visual/result in frame 1 and mirror it in on-screen text.",
+                "Cut setup sentences until value lands before second 3 for short-form or second 5 for long-form.",
+            ],
+        )
+
+    if detector_key == "open_loops":
+        count = _safe_int(detector_payload.get("count"), 0)
+        return (
+            [
+                f"Detected {count} open-loop teaser(s).",
+                "Open loops increase completion when payoff is delivered quickly.",
+            ],
+            [
+                "Add one teaser line in the first 5 seconds that promises a concrete payoff.",
+                "Resolve each teaser before mid-video to avoid viewer frustration.",
+                "Avoid stacking more than two loops in one clip.",
+            ],
+        )
+
+    if detector_key == "dead_zones":
+        count = _safe_int(detector_payload.get("count"), 0)
+        total = _safe_float(detector_payload.get("total_seconds"), 0.0)
+        pace_hint = "every 1-2 seconds" if format_type == "short_form" else "every 10-20 seconds"
+        return (
+            [
+                f"Detected {count} dead-zone segment(s) totaling {round(total, 2)}s.",
+                "Dead zones correlate with retention cliffs and lower rewatch signals.",
+            ],
+            [
+                "Trim low-information pauses and filler phrases around detected dead zones.",
+                f"Insert visual/pattern shifts {pace_hint} to reset attention.",
+                "Overlay captions or proof visuals during slower spoken sections.",
+            ],
+        )
+
+    if detector_key == "pattern_interrupts":
+        per_minute = _safe_float(detector_payload.get("interrupts_per_minute"), 0.0)
+        return (
+            [
+                f"Pattern interrupts are {round(per_minute, 2)} per minute.",
+                f"Assessment is '{detector_payload.get('assessment', 'unknown')}'.",
+            ],
+            [
+                "Insert planned interrupt beats (camera/angle/text/pace change) at fixed intervals.",
+                "Move strongest proof element immediately before likely drop points.",
+                "Alternate sentence length and shot framing to avoid monotony.",
+            ],
+        )
+
+    if detector_key == "cta_style":
+        style = str(detector_payload.get("style", "none") or "none").replace("_", " ")
+        return (
+            [
+                f"Detected CTA style: {style}.",
+                "Single-intent CTA generally outperforms stacked CTA asks.",
+            ],
+            [
+                "Pick one CTA objective only (comment, save/share, follow, or link action).",
+                "Phrase CTA as a concrete prompt tied to the promise of the video.",
+                "Place CTA in final 10-15% with one-line framing and no extra asks.",
+            ],
+        )
+
+    return (["No detector evidence available."], ["No suggested edits available."])
+
+
+def _build_detector_rankings(
+    detectors: Dict[str, Any],
+    format_type: str,
+) -> Tuple[List[Dict[str, Any]], float, float, Dict[str, float]]:
+    weights = _detector_weights_for_format(format_type)
+
+    weighted_score = 0.0
+    average_scores: List[float] = []
+    rankings: List[Dict[str, Any]] = []
+    for detector_key in DETECTOR_ORDER:
+        payload = detectors.get(detector_key, {}) if isinstance(detectors, dict) else {}
+        score = _clamp(_safe_float(payload.get("score"), 0.0), 0.0, 100.0)
+        target_score = _safe_float(DETECTOR_TARGET_SCORES.get(detector_key, 80.0), 80.0)
+        gap = max(0.0, target_score - score)
+        normalized_gap = gap / max(target_score, 1.0)
+        weight = _safe_float(weights.get(detector_key), 0.0)
+        impact = normalized_gap * weight * 100.0
+        estimated_lift = min(12.0, normalized_gap * weight * 65.0)
+        priority = _detector_priority(impact)
+        evidence, edits = _detector_evidence_and_edits(detector_key, payload if isinstance(payload, dict) else {}, format_type)
+        rankings.append(
+            {
+                "detector_key": detector_key,
+                "label": DETECTOR_LABELS.get(detector_key, detector_key),
+                "score": round(score, 1),
+                "target_score": round(target_score, 1),
+                "gap": round(gap, 1),
+                "weight": round(weight, 3),
+                "priority": priority,
+                "estimated_lift_points": round(estimated_lift, 1),
+                "evidence": evidence,
+                "edits": edits,
+                "_impact": impact,
+            }
+        )
+        weighted_score += score * weight
+        average_scores.append(score)
+
+    rankings.sort(
+        key=lambda row: (
+            _safe_float(row["_impact"], 0.0),
+            _safe_float(row.get("gap"), 0.0),
+            _safe_float(row.get("weight"), 0.0),
+        ),
+        reverse=True,
+    )
+
+    for idx, row in enumerate(rankings):
+        row["rank"] = idx + 1
+        row.pop("_impact", None)
+
+    explicit_detector_score = sum(average_scores) / max(len(average_scores), 1)
+    return rankings, _clamp(weighted_score), round(explicit_detector_score, 1), weights
+
+
+def _build_next_actions(
+    detector_rankings: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    actions: List[Dict[str, Any]] = []
+    for row in detector_rankings:
+        gap = _safe_float(row.get("gap"), 0.0)
+        if gap <= 0:
+            continue
+        execution_steps = [str(step) for step in row.get("edits", []) if str(step).strip()]
+        evidence = [str(item) for item in row.get("evidence", []) if str(item).strip()]
+        actions.append(
+            {
+                "title": f"Improve {row.get('label', 'detector signal')}",
+                "detector_key": str(row.get("detector_key", "")),
+                "priority": str(row.get("priority", "low")),
+                "why": evidence[0] if evidence else "This detector is below the target benchmark.",
+                "expected_lift_points": _safe_float(row.get("estimated_lift_points"), 0.0),
+                "execution_steps": execution_steps,
+                "evidence": evidence,
+            }
+        )
+        if len(actions) >= 3:
+            break
+    return actions
+
+
 def _build_platform_metrics(
     video_analysis: Dict[str, Any],
     detectors: Dict[str, Any],
     retention_points: List[Dict[str, Any]],
     platform_metrics: Dict[str, Any],
+    format_type: str,
 ) -> Dict[str, Any]:
     overall_100 = _clamp(_to_100_scale(video_analysis.get("overall_score", 0)))
     sections = video_analysis.get("sections", [])
@@ -390,15 +612,11 @@ def _build_platform_metrics(
         - risk_penalty
     )
 
-    detector_scores = [
-        _safe_float(detectors.get("time_to_value", {}).get("score", 0.0), 0.0),
-        _safe_float(detectors.get("open_loops", {}).get("score", 0.0), 0.0),
-        _safe_float(detectors.get("dead_zones", {}).get("score", 0.0), 0.0),
-        _safe_float(detectors.get("pattern_interrupts", {}).get("score", 0.0), 0.0),
-        _safe_float(detectors.get("cta_style", {}).get("score", 0.0), 0.0),
-    ]
-    detector_composite = sum(detector_scores) / max(len(detector_scores), 1)
-    score = _clamp((base_score * 0.75) + (detector_composite * 0.25))
+    detector_rankings, detector_weighted_score, explicit_detector_score, detector_weights = _build_detector_rankings(
+        detectors=detectors,
+        format_type=format_type,
+    )
+    score = _clamp((base_score * 0.75) + (detector_weighted_score * 0.25))
 
     metric_coverage = {
         "likes": "available",
@@ -451,13 +669,16 @@ def _build_platform_metrics(
         "signals": {
             "overall_multimodal_score": round(overall_100, 1),
             "base_multimodal_score": round(base_score, 1),
-            "explicit_detector_score": round(detector_composite, 1),
+            "explicit_detector_score": explicit_detector_score,
+            "detector_weighted_score": round(detector_weighted_score, 1),
+            "detector_weight_breakdown": detector_weights,
             "hook_strength": round(hook_strength, 1),
             "pacing_strength": round(pacing_strength, 1),
             "timestamp_positive_signals": positives,
             "timestamp_negative_signals": negatives,
         },
         "detectors": detectors,
+        "detector_rankings": detector_rankings,
         "metric_coverage": metric_coverage,
         "true_metrics": true_metrics if true_metrics else None,
         "true_metric_notes": true_signal_notes,
@@ -644,7 +865,14 @@ async def _build_performance_prediction(
     platform_metrics: Dict[str, Any],
 ) -> Dict[str, Any]:
     format_type = _infer_format(duration_seconds)
-    platform_score = _build_platform_metrics(video_analysis, detectors, retention_points, platform_metrics)
+    platform_score = _build_platform_metrics(
+        video_analysis,
+        detectors,
+        retention_points,
+        platform_metrics,
+        format_type=format_type,
+    )
+    next_actions = _build_next_actions(platform_score.get("detector_rankings", []))
     benchmark = await _collect_competitor_benchmark(user_id, format_type)
     competitor_metrics = _build_competitor_metrics(platform_score["score"], benchmark)
 
@@ -676,6 +904,7 @@ async def _build_performance_prediction(
             },
         },
         "repurpose_plan": _build_repurpose_plan(video_analysis, detectors, format_type),
+        "next_actions": next_actions,
     }
 
 
@@ -762,6 +991,23 @@ async def process_video_audit(
                 retention_points=retention_points,
                 platform_metrics=platform_metrics_input,
             )
+            detector_rankings = (
+                performance_prediction.get("platform_metrics", {}).get("detector_rankings", [])
+                if isinstance(performance_prediction, dict)
+                else []
+            )
+            next_actions = (
+                performance_prediction.get("next_actions", [])
+                if isinstance(performance_prediction, dict)
+                else []
+            )
+            logger.info(
+                "Audit %s ranking summary: detector_rankings=%s next_actions=%s top_priority=%s",
+                audit_id,
+                len(detector_rankings) if isinstance(detector_rankings, list) else 0,
+                len(next_actions) if isinstance(next_actions, list) else 0,
+                detector_rankings[0].get("priority") if isinstance(detector_rankings, list) and detector_rankings else "n/a",
+            )
 
             audit.status = "completed"
             audit.progress = "100"
@@ -786,6 +1032,11 @@ async def process_video_audit(
                 await db.commit()
 
         finally:
+            if source_mode == "upload" and settings.DELETE_UPLOAD_AFTER_AUDIT and upload_path:
+                try:
+                    Path(upload_path).unlink(missing_ok=True)
+                except Exception as exc:
+                    logger.warning("Could not delete upload source file for audit %s: %s", audit_id, exc)
             if os.path.exists(temp_dir):
                 try:
                     shutil.rmtree(temp_dir)

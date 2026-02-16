@@ -200,14 +200,16 @@ export async function getCompetitors(userId?: string): Promise<Competitor[]> {
     return fetchApi(`/competitors/?user_id=${safeEncode(qUserId)}`);
 }
 
-export async function removeCompetitor(competitorId: string): Promise<void> {
-    return fetchApi(`/competitors/${competitorId}`, {
+export async function removeCompetitor(competitorId: string, userId?: string): Promise<void> {
+    const qUserId = resolveUserId(userId);
+    return fetchApi(`/competitors/${competitorId}?user_id=${safeEncode(qUserId)}`, {
         method: "DELETE",
     });
 }
 
-export async function getCompetitorVideos(competitorId: string, limit = 10): Promise<VideoInfo[]> {
-    return fetchApi(`/competitors/${competitorId}/videos?limit=${limit}`);
+export async function getCompetitorVideos(competitorId: string, limit = 10, userId?: string): Promise<VideoInfo[]> {
+    const qUserId = resolveUserId(userId);
+    return fetchApi(`/competitors/${competitorId}/videos?limit=${limit}&user_id=${safeEncode(qUserId)}`);
 }
 
 export interface HookPattern {
@@ -295,6 +297,23 @@ export interface BlueprintRepurposePlan {
     tiktok: RepurposePlatformPlan;
 }
 
+export interface BlueprintTranscriptQuality {
+    sample_size: number;
+    by_source: Record<string, number>;
+    transcript_coverage_ratio: number;
+    fallback_ratio: number;
+    notes: string[];
+}
+
+export interface BlueprintVelocityAction {
+    title: string;
+    why: string;
+    evidence: string[];
+    execution_steps: string[];
+    target_metric: string;
+    expected_effect: string;
+}
+
 export interface BlueprintResult {
     gap_analysis: string[];
     content_pillars: string[];
@@ -303,6 +322,8 @@ export interface BlueprintResult {
     winner_pattern_signals?: WinnerPatternSignals;
     framework_playbook?: FrameworkPlaybook;
     repurpose_plan?: BlueprintRepurposePlan;
+    transcript_quality?: BlueprintTranscriptQuality;
+    velocity_actions?: BlueprintVelocityAction[];
 }
 
 export interface RecommendedCompetitor {
@@ -449,8 +470,9 @@ export async function uploadAuditVideo(file: File, userId?: string): Promise<Upl
     return fetchFormApi<UploadAuditVideoResponse>("/audit/upload", formData);
 }
 
-export async function getAuditStatus(auditId: string): Promise<AuditStatus> {
-    return fetchApi<AuditStatus>(`/audit/${auditId}`);
+export async function getAuditStatus(auditId: string, userId?: string): Promise<AuditStatus> {
+    const qUserId = resolveUserId(userId);
+    return fetchApi<AuditStatus>(`/audit/${auditId}?user_id=${safeEncode(qUserId)}`);
 }
 
 export async function getAudits(userId?: string, limit = 20): Promise<AuditSummary[]> {
@@ -494,6 +516,8 @@ export interface ConsolidatedReport {
                 overall_multimodal_score: number;
                 base_multimodal_score: number;
                 explicit_detector_score: number;
+                detector_weighted_score: number;
+                detector_weight_breakdown: Record<string, number>;
                 hook_strength: number;
                 pacing_strength: number;
                 timestamp_positive_signals: number;
@@ -528,6 +552,19 @@ export interface ConsolidatedReport {
                     window: string;
                 };
             };
+            detector_rankings?: Array<{
+                detector_key: string;
+                label: string;
+                score: number;
+                target_score: number;
+                gap: number;
+                weight: number;
+                priority: "critical" | "high" | "medium" | "low";
+                rank: number;
+                estimated_lift_points: number;
+                evidence: string[];
+                edits: string[];
+            }>;
             metric_coverage?: {
                 likes: string;
                 comments: string;
@@ -570,6 +607,15 @@ export interface ConsolidatedReport {
                 cta: string;
             };
         };
+        next_actions?: Array<{
+            title: string;
+            detector_key: string;
+            priority: "critical" | "high" | "medium" | "low";
+            why: string;
+            expected_lift_points: number;
+            execution_steps: string[];
+            evidence: string[];
+        }>;
     };
     blueprint: BlueprintResult;
     recommendations: string[];

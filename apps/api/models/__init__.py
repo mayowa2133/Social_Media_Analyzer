@@ -8,3 +8,4 @@ from .video import Video
 from .video_metrics import VideoMetrics
 from .audit import Audit
 from .upload import Upload
+from .blueprint_snapshot import BlueprintSnapshot

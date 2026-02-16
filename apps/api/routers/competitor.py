@@ -3,9 +3,10 @@ Router for competitor management and analysis.
 """
 
 import uuid
+import logging
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -16,13 +17,14 @@ from models.user import User
 from routers.youtube import _get_youtube_client, get_channel_videos
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 # ==================== Pydantic Models ====================
 
 class AddCompetitorRequest(BaseModel):
     channel_url: str
-    user_id: str = "test-user"  # Optional for MVP
+    user_id: str
 
 
 class CompetitorResponse(BaseModel):
@@ -38,12 +40,12 @@ class CompetitorResponse(BaseModel):
 
 
 class BlueprintRequest(BaseModel):
-    user_id: str = "test-user"
+    user_id: str
 
 
 class RecommendCompetitorsRequest(BaseModel):
     niche: str
-    user_id: str = "test-user"
+    user_id: str
     limit: int = Field(default=8, ge=1, le=20)
     page: int = Field(default=1, ge=1)
     sort_by: Literal["subscriber_count", "avg_views_per_video", "view_count"] = "subscriber_count"
@@ -137,13 +139,14 @@ async def add_competitor(
 
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Failed to add competitor for user %s", request.user_id)
+        raise HTTPException(status_code=500, detail="Failed to add competitor.")
 
 
 @router.get("/", response_model=List[CompetitorResponse])
 async def list_competitors(
-    user_id: str = "test-user",
+    user_id: str,
     db: AsyncSession = Depends(get_db),
 ):
     """List all competitors for a user."""
@@ -236,14 +239,24 @@ async def recommend_competitors(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Failed to recommend competitors for user %s", request.user_id)
+        raise HTTPException(status_code=500, detail="Failed to recommend competitors.")
 
 
 @router.delete("/{competitor_id}")
-async def remove_competitor(competitor_id: str, db: AsyncSession = Depends(get_db)):
+async def remove_competitor(
+    competitor_id: str,
+    user_id: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
     """Remove a competitor."""
-    result = await db.execute(select(Competitor).where(Competitor.id == competitor_id))
+    result = await db.execute(
+        select(Competitor).where(
+            Competitor.id == competitor_id,
+            Competitor.user_id == user_id,
+        )
+    )
     comp = result.scalar_one_or_none()
 
     if not comp:
@@ -258,10 +271,16 @@ async def remove_competitor(competitor_id: str, db: AsyncSession = Depends(get_d
 async def get_competitor_videos_endpoint(
     competitor_id: str,
     limit: int = 10,
+    user_id: str = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
     """Get videos for a competitor."""
-    result = await db.execute(select(Competitor).where(Competitor.id == competitor_id))
+    result = await db.execute(
+        select(Competitor).where(
+            Competitor.id == competitor_id,
+            Competitor.user_id == user_id,
+        )
+    )
     comp = result.scalar_one_or_none()
 
     if not comp:

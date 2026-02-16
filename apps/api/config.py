@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     # OpenAI
     OPENAI_API_KEY: str = ""
     AUDIT_UPLOAD_DIR: str = "/tmp/spc_uploads"
+    AUDIT_UPLOAD_RETENTION_HOURS: int = 72
+    DELETE_UPLOAD_AFTER_AUDIT: bool = False
+    BLUEPRINT_CACHE_TTL_MINUTES: int = 60
     
     # Feature Flags
     ENABLE_TIKTOK_CONNECTORS: bool = False
@@ -49,3 +52,11 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def require_youtube_api_key() -> str:
+    """Return configured YouTube API key or raise a configuration error."""
+    api_key = (settings.YOUTUBE_API_KEY or "").strip()
+    if not api_key:
+        raise ValueError("YOUTUBE_API_KEY is not configured")
+    return api_key

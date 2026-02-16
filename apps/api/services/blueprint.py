@@ -4,6 +4,7 @@ Service for generating Competitor Blueprints.
 
 import asyncio
 import json
+import logging
 import re
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -12,12 +13,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from config import settings
+from config import settings, require_youtube_api_key
 from ingestion.youtube import create_youtube_client_with_api_key
 from models.competitor import Competitor
 from models.connection import Connection
 from models.profile import Profile
 
+logger = logging.getLogger(__name__)
 
 HOOK_TEMPLATE_MAP = {
     "Question Hook": "Why {pain_point} is hurting your growth (and what to do instead)",
@@ -58,12 +60,13 @@ TOPIC_STOP_WORDS = {
     "creators",
     "channel",
 }
+TRANSCRIPT_FETCH_TIMEOUT_SECONDS = 6.0
+TRANSCRIPT_FETCH_CONCURRENCY = 6
+TRUE_TRANSCRIPT_SOURCES = {"youtube_transcript_api", "youtube_captions"}
 
 
 def _get_youtube_client():
-    api_key = settings.YOUTUBE_API_KEY if hasattr(settings, "YOUTUBE_API_KEY") else settings.GOOGLE_CLIENT_SECRET
-    if not api_key:
-        raise ValueError("YouTube API key not configured")
+    api_key = require_youtube_api_key()
     return create_youtube_client_with_api_key(api_key)
 
 
@@ -252,7 +255,12 @@ def _build_framework_playbook(competitor_videos: List[Dict[str, Any]]) -> Dict[s
     if not competitor_videos:
         return {
             "summary": "No competitor framework data yet.",
-            "stage_adoption": {},
+            "stage_adoption": {
+                "authority_hook": 0.0,
+                "fast_proof": 0.0,
+                "framework_steps": 0.0,
+                "open_loop": 0.0,
+            },
             "cta_distribution": {},
             "dominant_sequence": [],
             "execution_notes": [],
@@ -349,29 +357,221 @@ def _build_repurpose_plan(
     }
 
 
-def _safe_transcript_text(client: Any, video_id: str, fallback_text: str) -> str:
-    text = ""
+def _extract_transcript_payload_sync(
+    client: Any,
+    video_id: str,
+    description_fallback: str,
+    title_fallback: str,
+) -> Dict[str, Any]:
+    # 1) Transcript API first.
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi  # type: ignore
+
+        transcript_items = YouTubeTranscriptApi.get_transcript(video_id, languages=["en"])
+        chunks = [item.get("text", "").strip() for item in transcript_items[:120] if item.get("text")]
+        transcript_text = " ".join(chunks).strip()
+        if transcript_text:
+            return {
+                "text": transcript_text[:9000],
+                "source": "youtube_transcript_api",
+                "char_count": len(transcript_text[:9000]),
+                "segment_count": len(chunks),
+            }
+    except Exception:
+        pass
+
+    # 2) YouTube captions if actual text is available.
     try:
         caption_data = client.get_video_captions(video_id)
-        if isinstance(caption_data, str) and caption_data and not caption_data.lower().startswith("captions available"):
-            text = caption_data
+        if isinstance(caption_data, str):
+            caption_text = caption_data.strip()
+            if caption_text and not caption_text.lower().startswith("captions available"):
+                caption_segments = [s for s in re.split(r"[.!?\n]+", caption_text) if s.strip()]
+                return {
+                    "text": caption_text[:9000],
+                    "source": "youtube_captions",
+                    "char_count": len(caption_text[:9000]),
+                    "segment_count": len(caption_segments),
+                }
     except Exception:
-        text = ""
+        pass
 
-    if not text:
-        # Optional runtime integration if library is available.
+    # 3) Description fallback.
+    description_text = str(description_fallback or "").strip()
+    if description_text:
+        return {
+            "text": description_text[:3000],
+            "source": "description_fallback",
+            "char_count": len(description_text[:3000]),
+            "segment_count": 0,
+        }
+
+    # 4) Title fallback.
+    title_text = str(title_fallback or "").strip() or "Untitled video"
+    return {
+        "text": title_text[:300],
+        "source": "title_fallback",
+        "char_count": len(title_text[:300]),
+        "segment_count": 0,
+    }
+
+
+async def _extract_transcript_payload(
+    client: Any,
+    video_id: str,
+    description_fallback: str,
+    title_fallback: str,
+    semaphore: asyncio.Semaphore,
+) -> Dict[str, Any]:
+    async with semaphore:
         try:
-            from youtube_transcript_api import YouTubeTranscriptApi  # type: ignore
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    _extract_transcript_payload_sync,
+                    client,
+                    video_id,
+                    description_fallback,
+                    title_fallback,
+                ),
+                timeout=TRANSCRIPT_FETCH_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            logger.warning("Transcript extraction timeout/failure for %s: %s", video_id, exc)
+            description_text = str(description_fallback or "").strip()
+            if description_text:
+                return {
+                    "text": description_text[:3000],
+                    "source": "description_fallback",
+                    "char_count": len(description_text[:3000]),
+                    "segment_count": 0,
+                }
+            title_text = str(title_fallback or "").strip() or "Untitled video"
+            return {
+                "text": title_text[:300],
+                "source": "title_fallback",
+                "char_count": len(title_text[:300]),
+                "segment_count": 0,
+            }
 
-            transcript_items = YouTubeTranscriptApi.get_transcript(video_id, languages=["en"])
-            chunks = [item.get("text", "").strip() for item in transcript_items[:80] if item.get("text")]
-            text = " ".join(chunks).strip()
-        except Exception:
-            text = ""
 
-    if text:
-        return text[:6000]
-    return fallback_text[:3000]
+def _build_transcript_quality(videos: List[Dict[str, Any]]) -> Dict[str, Any]:
+    sample_size = len(videos)
+    by_source: Dict[str, int] = defaultdict(int)
+    true_count = 0
+    for video in videos:
+        source = str(video.get("transcript_source", "unknown") or "unknown")
+        by_source[source] += 1
+        if source in TRUE_TRANSCRIPT_SOURCES:
+            true_count += 1
+
+    coverage = (true_count / sample_size) if sample_size else 0.0
+    fallback_ratio = (1.0 - coverage) if sample_size else 1.0
+    dominant_source = max(by_source, key=lambda key: by_source[key]) if by_source else "none"
+
+    notes = [
+        f"Transcript coverage ratio is {round(coverage, 3)} based on {sample_size} competitor videos.",
+        f"Dominant transcript source: {dominant_source}.",
+    ]
+    if fallback_ratio > 0.5:
+        notes.append("More than half of videos used fallback text; expect lower precision in framework extraction.")
+    else:
+        notes.append("Most videos used transcript/caption text, improving reliability of hook and framework signals.")
+
+    return {
+        "sample_size": sample_size,
+        "by_source": dict(sorted(by_source.items(), key=lambda item: item[1], reverse=True)),
+        "transcript_coverage_ratio": round(coverage, 3),
+        "fallback_ratio": round(fallback_ratio, 3),
+        "notes": notes,
+    }
+
+
+def _build_velocity_actions(
+    winner_signals: Dict[str, Any],
+    competitor_framework: Dict[str, Any],
+    user_framework: Dict[str, Any],
+    hook_intelligence: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    actions: List[Dict[str, Any]] = []
+
+    topics = winner_signals.get("top_topics_by_velocity", [])
+    if isinstance(topics, list) and topics:
+        top_topic = topics[0]
+        topic_name = str(top_topic.get("topic", "high-velocity topic"))
+        actions.append(
+            {
+                "title": f"Double down on '{topic_name}' velocity topic",
+                "why": "Highest velocity competitor topics are compounding the fastest in this niche.",
+                "evidence": [
+                    f"Top topic: {topic_name}",
+                    f"Avg views/day: {top_topic.get('avg_views_per_day', 0)}",
+                    f"Topic sample count: {top_topic.get('count', 0)} videos",
+                ],
+                "execution_steps": [
+                    f"Publish 2-3 videos around '{topic_name}' in the next cycle.",
+                    "Reuse proven structure from top competitor titles while changing examples/proof.",
+                    "Measure views/day after 72 hours and keep only winning angle variants.",
+                ],
+                "target_metric": "views_per_day",
+                "expected_effect": "Higher content velocity and faster discovery in recommendations.",
+            }
+        )
+
+    correlation = float(winner_signals.get("hook_velocity_correlation", 0.0) or 0.0)
+    common_patterns = hook_intelligence.get("common_patterns", [])
+    top_pattern = "Direct Outcome Hook"
+    if isinstance(common_patterns, list) and common_patterns:
+        top_pattern = str(common_patterns[0].get("pattern", top_pattern))
+    actions.append(
+        {
+            "title": f"Adopt '{top_pattern}' hook format consistently",
+            "why": "Hook style consistency is linked to velocity in the competitor set.",
+            "evidence": [
+                f"Hook/velocity correlation: {round(correlation, 3)}",
+                f"Top repeated pattern: {top_pattern}",
+            ],
+            "execution_steps": [
+                "Use one hook template family for the next 5 uploads to improve pattern learning.",
+                "Lead with concrete outcome and tighten first line to one breath.",
+                "A/B test title line variants while preserving the same opening structure.",
+            ],
+            "target_metric": "opening_retention",
+            "expected_effect": "Higher early hold and improved click-to-watch conversion.",
+        }
+    )
+
+    competitor_stage = competitor_framework.get("stage_adoption", {}) if isinstance(competitor_framework, dict) else {}
+    user_stage = user_framework.get("stage_adoption", {}) if isinstance(user_framework, dict) else {}
+    stage_keys = ("authority_hook", "fast_proof", "framework_steps", "open_loop")
+    largest_key = "fast_proof"
+    largest_gap = 0.0
+    for key in stage_keys:
+        gap = float(competitor_stage.get(key, 0.0) or 0.0) - float(user_stage.get(key, 0.0) or 0.0)
+        if gap > largest_gap:
+            largest_gap = gap
+            largest_key = key
+
+    stage_label = largest_key.replace("_", " ")
+    actions.append(
+        {
+            "title": f"Close the '{stage_label}' framework gap",
+            "why": "Competitors execute this stage more often in winning videos.",
+            "evidence": [
+                f"Competitor adoption: {round(float(competitor_stage.get(largest_key, 0.0) or 0.0) * 100, 1)}%",
+                f"Your adoption: {round(float(user_stage.get(largest_key, 0.0) or 0.0) * 100, 1)}%",
+                f"Gap: {round(largest_gap * 100, 1)} points",
+            ],
+            "execution_steps": [
+                "Script this stage explicitly before recording and keep it in every draft.",
+                "Place proof earlier and collapse setup to avoid delayed payoff.",
+                "Track retention at each major segment to verify gap closure.",
+            ],
+            "target_metric": "mid_video_retention",
+            "expected_effect": "Improved continuation through the body and better completion rates.",
+        }
+    )
+
+    return actions[:3]
 
 
 def _detect_hook_pattern(title: str) -> str:
@@ -849,6 +1049,60 @@ def _normalize_repurpose_plan(raw: Any, fallback: Dict[str, Any]) -> Dict[str, A
     }
 
 
+def _normalize_transcript_quality(raw: Any, fallback: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return fallback
+
+    by_source: Dict[str, int] = {}
+    raw_by_source = raw.get("by_source", {})
+    if isinstance(raw_by_source, dict):
+        for key, value in raw_by_source.items():
+            source = str(key).strip()
+            if source:
+                by_source[source] = _safe_int(value, 0)
+    if not by_source:
+        by_source = fallback.get("by_source", {})
+
+    notes = _safe_list_of_strings(raw.get("notes", []))
+    if not notes:
+        notes = fallback.get("notes", [])
+
+    return {
+        "sample_size": _safe_int(raw.get("sample_size", fallback.get("sample_size", 0))),
+        "by_source": by_source,
+        "transcript_coverage_ratio": float(
+            raw.get("transcript_coverage_ratio", fallback.get("transcript_coverage_ratio", 0.0)) or 0.0
+        ),
+        "fallback_ratio": float(raw.get("fallback_ratio", fallback.get("fallback_ratio", 1.0)) or 0.0),
+        "notes": notes,
+    }
+
+
+def _normalize_velocity_actions(raw: Any, fallback: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    actions: List[Dict[str, Any]] = []
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title", "")).strip()
+            why = str(item.get("why", "")).strip()
+            if not title or not why:
+                continue
+            evidence = _safe_list_of_strings(item.get("evidence", []))
+            execution_steps = _safe_list_of_strings(item.get("execution_steps", []))
+            actions.append(
+                {
+                    "title": title,
+                    "why": why,
+                    "evidence": evidence,
+                    "execution_steps": execution_steps,
+                    "target_metric": str(item.get("target_metric", "")).strip() or "views_per_day",
+                    "expected_effect": str(item.get("expected_effect", "")).strip() or "Improve performance consistency.",
+                }
+            )
+    return actions or fallback
+
+
 def _normalize_blueprint_payload(payload: Any, fallback: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         return fallback
@@ -890,6 +1144,14 @@ def _normalize_blueprint_payload(payload: Any, fallback: Dict[str, Any]) -> Dict
         payload.get("repurpose_plan"),
         fallback["repurpose_plan"],
     )
+    transcript_quality = _normalize_transcript_quality(
+        payload.get("transcript_quality"),
+        fallback["transcript_quality"],
+    )
+    velocity_actions = _normalize_velocity_actions(
+        payload.get("velocity_actions"),
+        fallback["velocity_actions"],
+    )
 
     return {
         "gap_analysis": gap_analysis,
@@ -899,6 +1161,8 @@ def _normalize_blueprint_payload(payload: Any, fallback: Dict[str, Any]) -> Dict
         "winner_pattern_signals": winner_pattern_signals,
         "framework_playbook": framework_playbook,
         "repurpose_plan": repurpose_plan,
+        "transcript_quality": transcript_quality,
+        "velocity_actions": velocity_actions,
     }
 
 
@@ -939,23 +1203,55 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession) -> Dict[str
     competitors = result.scalars().all()
 
     if not competitors:
+        empty_winner_signals = _build_winner_pattern_signals([])
+        empty_framework = _build_framework_playbook([])
+        empty_hooks = _empty_hook_intelligence()
         return {
             "gap_analysis": ["Add competitors to generate a blueprint."],
             "content_pillars": [],
             "video_ideas": [],
-            "hook_intelligence": _empty_hook_intelligence(),
-            "winner_pattern_signals": _build_winner_pattern_signals([]),
-            "framework_playbook": _build_framework_playbook([]),
-            "repurpose_plan": _build_repurpose_plan(_empty_hook_intelligence(), _build_winner_pattern_signals([]), _build_framework_playbook([])),
+            "hook_intelligence": empty_hooks,
+            "winner_pattern_signals": empty_winner_signals,
+            "framework_playbook": empty_framework,
+            "repurpose_plan": _build_repurpose_plan(empty_hooks, empty_winner_signals, empty_framework),
+            "transcript_quality": _build_transcript_quality([]),
+            "velocity_actions": [],
         }
 
     client = _get_youtube_client()
+    transcript_semaphore = asyncio.Semaphore(TRANSCRIPT_FETCH_CONCURRENCY)
 
     async def fetch_videos_safe(channel_id: str, label: str) -> List[Dict[str, Any]]:
         try:
             vids = client.get_channel_videos(channel_id, max_results=50)
             vid_ids = [v["id"] for v in vids if v.get("id")]
             details = client.get_video_details(vid_ids)
+
+            transcript_tasks: List[asyncio.Task] = []
+            ordered_video_ids: List[str] = []
+            for video in vids:
+                video_id = str(video.get("id", "")).strip()
+                if not video_id:
+                    continue
+                ordered_video_ids.append(video_id)
+                transcript_tasks.append(
+                    asyncio.create_task(
+                        _extract_transcript_payload(
+                            client=client,
+                            video_id=video_id,
+                            description_fallback=str(video.get("description", "") or ""),
+                            title_fallback=str(video.get("title", "") or ""),
+                            semaphore=transcript_semaphore,
+                        )
+                    )
+                )
+
+            transcript_payloads = await asyncio.gather(*transcript_tasks) if transcript_tasks else []
+            transcript_map = {
+                video_id: transcript_payloads[idx]
+                for idx, video_id in enumerate(ordered_video_ids)
+                if idx < len(transcript_payloads)
+            }
 
             enriched = []
             for video in vids:
@@ -964,13 +1260,25 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession) -> Dict[str
                     continue
                 detail = details.get(video_id, {})
                 description = str(video.get("description", "") or "")
-                transcript = _safe_transcript_text(client, video_id, description)
+                transcript_payload = transcript_map.get(
+                    video_id,
+                    {
+                        "text": description[:3000],
+                        "source": "description_fallback" if description else "title_fallback",
+                        "char_count": len(description[:3000]) if description else len(str(video.get("title", "") or "")[:300]),
+                        "segment_count": 0,
+                    },
+                )
+                transcript = str(transcript_payload.get("text", "") or "")
                 views = _safe_int(detail.get("view_count", 0))
                 enriched.append(
                     {
                         "title": video.get("title", ""),
                         "description": description,
                         "transcript": transcript,
+                        "transcript_source": str(transcript_payload.get("source", "unknown")),
+                        "transcript_char_count": _safe_int(transcript_payload.get("char_count", 0)),
+                        "transcript_segment_count": _safe_int(transcript_payload.get("segment_count", 0)),
                         "views": views,
                         "likes": _safe_int(detail.get("like_count", 0)),
                         "comment_count": _safe_int(detail.get("comment_count", 0)),
@@ -988,7 +1296,7 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession) -> Dict[str
                 )
             return enriched
         except Exception as e:
-            print(f"Error fetching for {label}: {e}")
+            logger.warning("Error fetching blueprint videos for %s (%s): %s", label, channel_id, e)
             return []
 
     tasks = []
@@ -1003,11 +1311,32 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession) -> Dict[str
     for rows in results:
         all_videos.extend(rows)
 
+    user_videos = [v for v in all_videos if v.get("channel") == "User"]
     competitor_videos = [v for v in all_videos if v.get("channel") != "User"]
     hook_intelligence = _build_hook_intelligence(competitor_videos)
     winner_pattern_signals = _build_winner_pattern_signals(competitor_videos)
     framework_playbook = _build_framework_playbook(competitor_videos)
     repurpose_plan = _build_repurpose_plan(hook_intelligence, winner_pattern_signals, framework_playbook)
+    transcript_quality = _build_transcript_quality(competitor_videos)
+    user_framework_playbook = _build_framework_playbook(user_videos)
+    velocity_actions = _build_velocity_actions(
+        winner_signals=winner_pattern_signals,
+        competitor_framework=framework_playbook,
+        user_framework=user_framework_playbook,
+        hook_intelligence=hook_intelligence,
+    )
+    logger.info(
+        "Blueprint transcript coverage user=%s sample=%s coverage=%s by_source=%s",
+        user_id,
+        transcript_quality.get("sample_size", 0),
+        transcript_quality.get("transcript_coverage_ratio", 0.0),
+        transcript_quality.get("by_source", {}),
+    )
+    logger.info(
+        "Blueprint velocity actions user=%s actions=%s",
+        user_id,
+        len(velocity_actions),
+    )
 
     top_topics = winner_pattern_signals.get("top_topics_by_velocity", [])
     derived_content_pillars = [row.get("topic", "") for row in top_topics[:3] if row.get("topic")]
@@ -1039,6 +1368,8 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession) -> Dict[str
         "winner_pattern_signals": winner_pattern_signals,
         "framework_playbook": framework_playbook,
         "repurpose_plan": repurpose_plan,
+        "transcript_quality": transcript_quality,
+        "velocity_actions": velocity_actions,
     }
 
     prompt = f"""
@@ -1068,6 +1399,10 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession) -> Dict[str
        - Return CTA distribution.
     7. Repurpose Plan:
        - Output one core angle with YouTube Shorts, Instagram Reels, and TikTok edit directives.
+    8. Transcript Quality:
+       - Summarize transcript source coverage and fallback ratio.
+    9. Velocity Actions:
+       - Output exactly 3 "do this next" actions with evidence + concrete steps.
 
     Return JSON:
     {{
@@ -1152,7 +1487,24 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession) -> Dict[str
             "youtube_shorts": {{"duration_target_s": 45, "hook_template": "...", "edit_directives": ["..."]}},
             "instagram_reels": {{"duration_target_s": 35, "hook_template": "...", "edit_directives": ["..."]}},
             "tiktok": {{"duration_target_s": 28, "hook_template": "...", "edit_directives": ["..."]}}
-        }}
+        }},
+        "transcript_quality": {{
+            "sample_size": 80,
+            "by_source": {{"youtube_transcript_api": 40, "youtube_captions": 12, "description_fallback": 28}},
+            "transcript_coverage_ratio": 0.65,
+            "fallback_ratio": 0.35,
+            "notes": ["..."]
+        }},
+        "velocity_actions": [
+            {{
+                "title": "...",
+                "why": "...",
+                "evidence": ["..."],
+                "execution_steps": ["..."],
+                "target_metric": "...",
+                "expected_effect": "..."
+            }}
+        ]
     }}
     """
 
@@ -1172,5 +1524,5 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession) -> Dict[str
         parsed = json.loads(content)
         return _normalize_blueprint_payload(parsed, deterministic_blueprint)
     except Exception as e:
-        print(f"LLM Error: {e}")
+        logger.warning("Blueprint LLM fallback for user %s: %s", user_id, e)
         return deterministic_blueprint
