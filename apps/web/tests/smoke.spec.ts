@@ -245,6 +245,24 @@ function buildMockReport(auditId: string) {
                     expected_effect: "Higher discovery velocity.",
                 },
             ],
+            series_intelligence: {
+                summary: "Recurring competitor series extracted from repeated title anchors and ranked by velocity.",
+                sample_size: 12,
+                total_detected_series: 2,
+                series: [
+                    {
+                        series_key: "Ai News Breakdown",
+                        series_key_slug: "ai_news_breakdown",
+                        video_count: 4,
+                        competitor_count: 2,
+                        avg_views: 185000,
+                        avg_views_per_day: 2400.3,
+                        top_titles: ["AI News Breakdown Part 1", "AI News Breakdown Part 2"],
+                        channels: ["Mock Competitor Channel"],
+                        recommended_angle: "Run this as a repeatable arc with strong proof early.",
+                    },
+                ],
+            },
         },
         recommendations: [
             "Lead with a clearer value proposition in the first 5 seconds.",
@@ -321,6 +339,28 @@ async function installApiMocks(page: Page) {
                         avg_views_per_video: 79375,
                         thumbnail_url: "https://example.com/suggested1.jpg",
                         already_tracked: false,
+                    },
+                ],
+            });
+            return;
+        }
+
+        if (method === "POST" && path === "/competitors/series") {
+            await json(200, {
+                summary: "Recurring competitor series extracted from repeated title anchors and ranked by velocity.",
+                sample_size: 12,
+                total_detected_series: 1,
+                series: [
+                    {
+                        series_key: "Ai News Breakdown",
+                        series_key_slug: "ai_news_breakdown",
+                        video_count: 4,
+                        competitor_count: 2,
+                        avg_views: 185000,
+                        avg_views_per_day: 2400.3,
+                        top_titles: ["AI News Breakdown Part 1", "AI News Breakdown Part 2"],
+                        channels: ["Mock Competitor Channel"],
+                        recommended_angle: "Run this as a repeatable arc with strong proof early.",
                     },
                 ],
             });

@@ -348,6 +348,25 @@ export interface BlueprintVelocityAction {
     expected_effect: string;
 }
 
+export interface CompetitorSeries {
+    series_key: string;
+    series_key_slug: string;
+    video_count: number;
+    competitor_count: number;
+    avg_views: number;
+    avg_views_per_day: number;
+    top_titles: string[];
+    channels: string[];
+    recommended_angle: string;
+}
+
+export interface SeriesIntelligence {
+    summary: string;
+    sample_size: number;
+    total_detected_series: number;
+    series: CompetitorSeries[];
+}
+
 export interface BlueprintResult {
     gap_analysis: string[];
     content_pillars: string[];
@@ -358,6 +377,7 @@ export interface BlueprintResult {
     repurpose_plan?: BlueprintRepurposePlan;
     transcript_quality?: BlueprintTranscriptQuality;
     velocity_actions?: BlueprintVelocityAction[];
+    series_intelligence?: SeriesIntelligence;
 }
 
 export interface RecommendedCompetitor {
@@ -391,6 +411,132 @@ export async function generateBlueprint(userId?: string): Promise<BlueprintResul
     return fetchApi("/competitors/blueprint", {
         method: "POST",
         body: { user_id: resolveUserId(userId) },
+    });
+}
+
+export interface SeriesPlanRequest {
+    userId?: string;
+    mode: "scratch" | "competitor_template";
+    niche: string;
+    audience: string;
+    objective: string;
+    platform: "youtube_shorts" | "instagram_reels" | "tiktok" | "youtube_long";
+    episodes: number;
+    templateSeriesKey?: string;
+}
+
+export interface SeriesPlanEpisode {
+    episode_number: number;
+    working_title: string;
+    hook_template: string;
+    content_goal: string;
+    proof_idea: string;
+    duration_target_s: number;
+    cta: string;
+}
+
+export interface SeriesPlanResult {
+    mode: "scratch" | "competitor_template";
+    series_title: string;
+    series_thesis: string;
+    platform: "youtube_shorts" | "instagram_reels" | "tiktok" | "youtube_long";
+    episodes_count: number;
+    publishing_cadence: string;
+    success_metrics: string[];
+    why_this_will_work: string[];
+    episodes: SeriesPlanEpisode[];
+    source_template?: {
+        series_key: string;
+        video_count: number;
+        competitor_count: number;
+        channels: string[];
+        top_titles: string[];
+    };
+}
+
+export interface ViralScriptRequest {
+    userId?: string;
+    platform: "youtube_shorts" | "instagram_reels" | "tiktok" | "youtube_long";
+    topic: string;
+    audience: string;
+    objective: string;
+    tone: "bold" | "expert" | "conversational";
+    templateSeriesKey?: string;
+    desiredDurationS?: number;
+}
+
+export interface ViralScriptSection {
+    section: string;
+    time_window: string;
+    text: string;
+}
+
+export interface ViralScriptResult {
+    platform: "youtube_shorts" | "instagram_reels" | "tiktok" | "youtube_long";
+    topic: string;
+    audience: string;
+    objective: string;
+    tone: "bold" | "expert" | "conversational";
+    duration_target_s: number;
+    hook_deadline_s: number;
+    hook_template: string;
+    hook_line: string;
+    script_sections: ViralScriptSection[];
+    on_screen_text: string[];
+    shot_list: string[];
+    caption_options: string[];
+    hashtags: string[];
+    cta_line: string;
+    score_breakdown: {
+        hook_strength: number;
+        retention_design: number;
+        shareability: number;
+        overall: number;
+    };
+    improvement_notes: string[];
+    competitor_template?: {
+        series_key: string;
+        channels: string[];
+        top_titles: string[];
+    };
+}
+
+export async function getCompetitorSeriesInsights(userId?: string): Promise<SeriesIntelligence> {
+    return fetchApi<SeriesIntelligence>("/competitors/series", {
+        method: "POST",
+        body: { user_id: resolveUserId(userId) },
+    });
+}
+
+export async function generateSeriesPlan(payload: SeriesPlanRequest): Promise<SeriesPlanResult> {
+    return fetchApi<SeriesPlanResult>("/competitors/series/plan", {
+        method: "POST",
+        body: {
+            user_id: resolveUserId(payload.userId),
+            mode: payload.mode,
+            niche: payload.niche,
+            audience: payload.audience,
+            objective: payload.objective,
+            platform: payload.platform,
+            episodes: payload.episodes,
+            template_series_key: payload.templateSeriesKey,
+        },
+    });
+}
+
+export async function generateViralScript(payload: ViralScriptRequest): Promise<ViralScriptResult> {
+    return fetchApi<ViralScriptResult>("/competitors/script/generate", {
+        method: "POST",
+        body: {
+            user_id: resolveUserId(payload.userId),
+            platform: payload.platform,
+            topic: payload.topic,
+            audience: payload.audience,
+            objective: payload.objective,
+            tone: payload.tone,
+            template_series_key: payload.templateSeriesKey,
+            desired_duration_s: payload.desiredDurationS,
+        },
     });
 }
 

@@ -4,7 +4,7 @@ Router for competitor management and analysis.
 
 import uuid
 import logging
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -73,6 +73,32 @@ class RecommendCompetitorsResponse(BaseModel):
     total_count: int
     has_more: bool
     recommendations: List[RecommendedCompetitor]
+
+
+class SeriesInsightsRequest(BaseModel):
+    user_id: Optional[str] = None
+
+
+class SeriesPlanRequest(BaseModel):
+    user_id: Optional[str] = None
+    mode: Literal["scratch", "competitor_template"] = "scratch"
+    niche: str = Field(default="creator growth")
+    audience: str = Field(default="creators in your niche")
+    objective: str = Field(default="increase views, retention, and shares")
+    platform: Literal["youtube_shorts", "instagram_reels", "tiktok", "youtube_long"] = "youtube_shorts"
+    episodes: int = Field(default=5, ge=3, le=12)
+    template_series_key: Optional[str] = None
+
+
+class ViralScriptRequest(BaseModel):
+    user_id: Optional[str] = None
+    platform: Literal["youtube_shorts", "instagram_reels", "tiktok", "youtube_long"] = "youtube_shorts"
+    topic: str = Field(min_length=2, max_length=180)
+    audience: str = Field(default="creators")
+    objective: str = Field(default="increase watch time and shares")
+    tone: Literal["bold", "expert", "conversational"] = "bold"
+    template_series_key: Optional[str] = None
+    desired_duration_s: Optional[int] = Field(default=None, ge=15, le=900)
 
 
 # ==================== Endpoints ====================
@@ -314,3 +340,42 @@ async def generate_competitor_blueprint(
 
     scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
     return await generate_blueprint_service(scoped_user_id, db)
+
+
+@router.post("/series")
+async def get_competitor_series(
+    request: SeriesInsightsRequest,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Get recurring competitor series detected from tracked channels."""
+    from services.blueprint import get_competitor_series_service
+
+    scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
+    return await get_competitor_series_service(scoped_user_id, db)
+
+
+@router.post("/series/plan")
+async def generate_series_plan(
+    request: SeriesPlanRequest,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Generate a repeatable content series plan from scratch or competitor template."""
+    from services.blueprint import generate_series_plan_service
+
+    scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
+    return await generate_series_plan_service(scoped_user_id, request.model_dump(), db)
+
+
+@router.post("/script/generate")
+async def generate_viral_script(
+    request: ViralScriptRequest,
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Generate a high-performing short/reel/tiktok/long-form script scaffold."""
+    from services.blueprint import generate_viral_script_service
+
+    scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
+    return await generate_viral_script_service(scoped_user_id, request.model_dump(), db)

@@ -357,3 +357,121 @@ async def test_get_competitor_videos_rejects_cross_user_scope(client):
         headers=TEST_AUTH_HEADER,
     )
     assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_competitor_series_plan_and_script_endpoints(client):
+    with patch(
+        "services.blueprint.get_competitor_series_service",
+        new=AsyncMock(
+            return_value={
+                "summary": "Series summary",
+                "sample_size": 20,
+                "total_detected_series": 2,
+                "series": [
+                    {
+                        "series_key": "AI News Breakdown",
+                        "series_key_slug": "ai_news_breakdown",
+                        "video_count": 4,
+                        "competitor_count": 2,
+                        "avg_views": 120000,
+                        "avg_views_per_day": 3400.5,
+                        "top_titles": ["AI News Breakdown Part 1"],
+                        "channels": ["Comp One"],
+                        "recommended_angle": "Angle",
+                    }
+                ],
+            }
+        ),
+    ), patch(
+        "services.blueprint.generate_series_plan_service",
+        new=AsyncMock(
+            return_value={
+                "mode": "scratch",
+                "series_title": "AI News Sprint Series",
+                "series_thesis": "Thesis",
+                "platform": "youtube_shorts",
+                "episodes_count": 3,
+                "publishing_cadence": "3 posts/week",
+                "success_metrics": ["retention"],
+                "why_this_will_work": ["reason"],
+                "episodes": [
+                    {
+                        "episode_number": 1,
+                        "working_title": "Ep 1",
+                        "hook_template": "How to {outcome}",
+                        "content_goal": "Goal",
+                        "proof_idea": "Proof",
+                        "duration_target_s": 45,
+                        "cta": "comment_prompt",
+                    }
+                ],
+            }
+        ),
+    ), patch(
+        "services.blueprint.generate_viral_script_service",
+        new=AsyncMock(
+            return_value={
+                "platform": "tiktok",
+                "topic": "AI News",
+                "audience": "Creators",
+                "objective": "shares",
+                "tone": "bold",
+                "duration_target_s": 30,
+                "hook_deadline_s": 1,
+                "hook_template": "Why {pain_point}",
+                "hook_line": "Why AI news content stalls",
+                "script_sections": [{"section": "Hook", "time_window": "0-2s", "text": "Hook"}],
+                "on_screen_text": ["text"],
+                "shot_list": ["shot"],
+                "caption_options": ["caption"],
+                "hashtags": ["#ai"],
+                "cta_line": "comment",
+                "score_breakdown": {
+                    "hook_strength": 82,
+                    "retention_design": 80,
+                    "shareability": 78,
+                    "overall": 80.5,
+                },
+                "improvement_notes": ["note"],
+            }
+        ),
+    ):
+        series_resp = await client.post(
+            "/competitors/series",
+            json={"user_id": TEST_USER_ID},
+            headers=TEST_AUTH_HEADER,
+        )
+        assert series_resp.status_code == 200
+        assert series_resp.json()["total_detected_series"] == 2
+
+        plan_resp = await client.post(
+            "/competitors/series/plan",
+            json={
+                "user_id": TEST_USER_ID,
+                "mode": "scratch",
+                "niche": "AI News",
+                "audience": "Creators",
+                "objective": "Retention",
+                "platform": "youtube_shorts",
+                "episodes": 3,
+            },
+            headers=TEST_AUTH_HEADER,
+        )
+        assert plan_resp.status_code == 200
+        assert plan_resp.json()["series_title"] == "AI News Sprint Series"
+
+        script_resp = await client.post(
+            "/competitors/script/generate",
+            json={
+                "user_id": TEST_USER_ID,
+                "platform": "tiktok",
+                "topic": "AI News",
+                "audience": "Creators",
+                "objective": "shares",
+                "tone": "bold",
+            },
+            headers=TEST_AUTH_HEADER,
+        )
+        assert script_resp.status_code == 200
+        assert script_resp.json()["platform"] == "tiktok"

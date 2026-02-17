@@ -171,6 +171,48 @@ export function BlueprintDisplay({ blueprint, loading }: BlueprintDisplayProps) 
                 </div>
             )}
 
+            {blueprint.series_intelligence && (
+                <div className="rounded-2xl border border-[#dcdcdc] bg-white p-6">
+                    <h3 className="mb-2 flex items-center gap-2 text-xl font-bold text-[#232323]">
+                        <span>🎬</span> Competitor Series Radar
+                    </h3>
+                    <p className="mb-4 text-sm text-[#666]">
+                        {blueprint.series_intelligence.summary}
+                    </p>
+                    <p className="mb-4 text-xs text-[#707070]">
+                        Sample size: {blueprint.series_intelligence.sample_size} videos · Detected series: {blueprint.series_intelligence.total_detected_series}
+                    </p>
+                    {blueprint.series_intelligence.series.length > 0 ? (
+                        <div className="space-y-3">
+                            {blueprint.series_intelligence.series.slice(0, 6).map((series, idx) => (
+                                <div key={idx} className="rounded-lg border border-[#e1e1e1] bg-[#fafafa] p-4">
+                                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                        <p className="text-sm font-semibold text-[#202020]">{series.series_key}</p>
+                                        <span className="text-[11px] text-[#717171]">
+                                            {series.video_count} videos · {series.competitor_count} competitors
+                                        </span>
+                                    </div>
+                                    <p className="text-[11px] text-[#666]">
+                                        Avg views: {series.avg_views.toLocaleString()} · Avg views/day: {series.avg_views_per_day.toLocaleString()}
+                                    </p>
+                                    {series.top_titles.length > 0 && (
+                                        <ul className="mt-2 space-y-1 text-[11px] text-[#555]">
+                                            {series.top_titles.slice(0, 3).map((title, titleIdx) => (
+                                                <li key={titleIdx}>• {title}</li>
+                                            ))}
+                                        </ul>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <p className="text-xs text-[#7a7a7a]">
+                            No recurring series was detected yet. Add more competitors or expand tracked channels.
+                        </p>
+                    )}
+                </div>
+            )}
+
             {blueprint.winner_pattern_signals && (
                 <div className="rounded-2xl border border-[#dcdcdc] bg-white p-6">
                     <h3 className="mb-2 flex items-center gap-2 text-xl font-bold text-[#232323]">

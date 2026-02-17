@@ -180,6 +180,12 @@ def _fallback_blueprint(reason: str = "") -> Dict[str, Any]:
             "notes": [note],
         },
         "velocity_actions": [],
+        "series_intelligence": {
+            "summary": "No competitor series detected yet.",
+            "sample_size": 0,
+            "total_detected_series": 0,
+            "series": [],
+        },
     }
 
 

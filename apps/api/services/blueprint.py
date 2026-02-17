@@ -61,10 +61,51 @@ TOPIC_STOP_WORDS = {
     "creators",
     "channel",
 }
+SERIES_ANCHOR_STOP_WORDS = TOPIC_STOP_WORDS | {
+    "part",
+    "episode",
+    "ep",
+    "pt",
+    "season",
+    "series",
+    "update",
+    "news",
+}
 TRANSCRIPT_FETCH_TIMEOUT_SECONDS = 6.0
 TRANSCRIPT_FETCH_CONCURRENCY = 6
 TRUE_TRANSCRIPT_SOURCES = {"youtube_transcript_api", "youtube_captions"}
 TRANSCRIPT_CACHE_KEY_PREFIX = "spc:transcript:"
+SHORT_PLATFORMS = {"youtube_shorts", "instagram_reels", "tiktok"}
+SCRIPT_PLATFORM_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "youtube_shorts": {
+        "duration_target_s": 45,
+        "hook_deadline_s": 2,
+        "cta": "comment_prompt",
+        "cadence": "high",
+        "supports_short_form": True,
+    },
+    "instagram_reels": {
+        "duration_target_s": 35,
+        "hook_deadline_s": 2,
+        "cta": "save_prompt",
+        "cadence": "high",
+        "supports_short_form": True,
+    },
+    "tiktok": {
+        "duration_target_s": 28,
+        "hook_deadline_s": 1,
+        "cta": "follow_prompt",
+        "cadence": "very_high",
+        "supports_short_form": True,
+    },
+    "youtube_long": {
+        "duration_target_s": 420,
+        "hook_deadline_s": 12,
+        "cta": "comment_prompt",
+        "cadence": "moderate",
+        "supports_short_form": False,
+    },
+}
 
 
 def _get_youtube_client():
@@ -123,6 +164,123 @@ def _views_per_day(views: int, published_at: Any) -> float:
 def _extract_topic_keywords(text: str) -> List[str]:
     tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9_+-]{2,}", text.lower())
     return [token for token in tokens if token not in TOPIC_STOP_WORDS]
+
+
+def _series_anchor_from_title(title: str) -> str:
+    normalized = re.sub(r"\s+", " ", str(title or "").strip().lower())
+    if not normalized:
+        return ""
+
+    normalized = re.sub(
+        r"\b(part|episode|ep|pt|season|day)\s*#?\s*\d+\b",
+        " ",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    split_candidates = re.split(r"[:|–—-]", normalized)
+    candidate = split_candidates[0] if split_candidates else normalized
+    tokens = [
+        token
+        for token in re.findall(r"[a-z0-9][a-z0-9']*", candidate)
+        if token not in SERIES_ANCHOR_STOP_WORDS
+    ]
+    if len(tokens) < 2:
+        tokens = [
+            token
+            for token in re.findall(r"[a-z0-9][a-z0-9']*", normalized)
+            if token not in SERIES_ANCHOR_STOP_WORDS
+        ]
+    if len(tokens) < 2:
+        return ""
+    return " ".join(tokens[:5])
+
+
+def _humanize_anchor(anchor: str) -> str:
+    words = [word for word in str(anchor or "").split(" ") if word]
+    if not words:
+        return "Series"
+    return " ".join(words).title()
+
+
+def _empty_series_intelligence(summary: str = "Not enough competitor data to detect recurring series.") -> Dict[str, Any]:
+    return {
+        "summary": summary,
+        "sample_size": 0,
+        "total_detected_series": 0,
+        "series": [],
+    }
+
+
+def _build_series_intelligence(competitor_videos: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not competitor_videos:
+        return _empty_series_intelligence()
+
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for video in competitor_videos:
+        title = str(video.get("title", "") or "")
+        anchor = _series_anchor_from_title(title)
+        if not anchor:
+            continue
+        grouped[anchor].append(video)
+
+    series_rows: List[Dict[str, Any]] = []
+    for anchor, rows in grouped.items():
+        if len(rows) < 2:
+            continue
+        channels = sorted(
+            {
+                str(row.get("channel", "Competitor")).strip() or "Competitor"
+                for row in rows
+            }
+        )
+        views = [_safe_int(row.get("views", 0)) for row in rows]
+        velocities = [float(row.get("views_per_day", 0.0) or 0.0) for row in rows]
+        top_titles = [
+            str(row.get("title", "")).strip()
+            for row in sorted(rows, key=lambda item: _safe_int(item.get("views", 0)), reverse=True)
+            if str(row.get("title", "")).strip()
+        ][:4]
+        top_hook = _detect_hook_pattern(top_titles[0]) if top_titles else "Direct Outcome Hook"
+        display_key = _humanize_anchor(anchor)
+        series_rows.append(
+            {
+                "series_key": display_key,
+                "series_key_slug": anchor.replace(" ", "_"),
+                "video_count": len(rows),
+                "competitor_count": len(channels),
+                "avg_views": _safe_int(sum(views) / max(len(views), 1)),
+                "avg_views_per_day": round(sum(velocities) / max(len(velocities), 1), 2),
+                "top_titles": top_titles,
+                "channels": channels[:5],
+                "recommended_angle": (
+                    f"Use '{display_key}' as a repeatable arc and open with {top_hook} "
+                    "to keep each episode instantly recognizable."
+                ),
+            }
+        )
+
+    series_rows.sort(
+        key=lambda row: (
+            float(row.get("avg_views_per_day", 0.0) or 0.0),
+            _safe_int(row.get("video_count", 0)),
+            _safe_int(row.get("avg_views", 0)),
+        ),
+        reverse=True,
+    )
+
+    if not series_rows:
+        return _empty_series_intelligence(
+            "Competitor videos were analyzed, but no recurring multi-episode series pattern was detected."
+        )
+
+    return {
+        "summary": (
+            "Recurring competitor series extracted from repeated title anchors and ranked by velocity."
+        ),
+        "sample_size": len(competitor_videos),
+        "total_detected_series": len(series_rows),
+        "series": series_rows[:8],
+    }
 
 
 def _extract_cta_style(text: str) -> str:
@@ -1169,6 +1327,47 @@ def _normalize_velocity_actions(raw: Any, fallback: List[Dict[str, Any]]) -> Lis
     return actions or fallback
 
 
+def _normalize_series_intelligence(raw: Any, fallback: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return fallback
+
+    series_rows: List[Dict[str, Any]] = []
+    raw_series = raw.get("series", [])
+    if isinstance(raw_series, list):
+        for item in raw_series:
+            if not isinstance(item, dict):
+                continue
+            series_key = str(item.get("series_key", "")).strip()
+            if not series_key:
+                continue
+            series_rows.append(
+                {
+                    "series_key": series_key,
+                    "series_key_slug": str(item.get("series_key_slug", "")).strip()
+                    or series_key.lower().replace(" ", "_"),
+                    "video_count": _safe_int(item.get("video_count", 0)),
+                    "competitor_count": _safe_int(item.get("competitor_count", 0)),
+                    "avg_views": _safe_int(item.get("avg_views", 0)),
+                    "avg_views_per_day": float(item.get("avg_views_per_day", 0.0) or 0.0),
+                    "top_titles": _safe_list_of_strings(item.get("top_titles", []))[:4],
+                    "channels": _safe_list_of_strings(item.get("channels", []))[:5],
+                    "recommended_angle": str(item.get("recommended_angle", "")).strip(),
+                }
+            )
+
+    if not series_rows:
+        series_rows = fallback.get("series", [])
+
+    return {
+        "summary": str(raw.get("summary", fallback.get("summary", ""))).strip() or fallback.get("summary", ""),
+        "sample_size": _safe_int(raw.get("sample_size", fallback.get("sample_size", 0))),
+        "total_detected_series": _safe_int(
+            raw.get("total_detected_series", fallback.get("total_detected_series", len(series_rows)))
+        ),
+        "series": series_rows,
+    }
+
+
 def _normalize_blueprint_payload(payload: Any, fallback: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         return fallback
@@ -1218,6 +1417,10 @@ def _normalize_blueprint_payload(payload: Any, fallback: Dict[str, Any]) -> Dict
         payload.get("velocity_actions"),
         fallback["velocity_actions"],
     )
+    series_intelligence = _normalize_series_intelligence(
+        payload.get("series_intelligence"),
+        fallback["series_intelligence"],
+    )
 
     return {
         "gap_analysis": gap_analysis,
@@ -1229,7 +1432,430 @@ def _normalize_blueprint_payload(payload: Any, fallback: Dict[str, Any]) -> Dict
         "repurpose_plan": repurpose_plan,
         "transcript_quality": transcript_quality,
         "velocity_actions": velocity_actions,
+        "series_intelligence": series_intelligence,
     }
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _resolve_platform(platform: Any) -> Tuple[str, Dict[str, Any]]:
+    key = str(platform or "youtube_shorts").strip().lower()
+    if key not in SCRIPT_PLATFORM_DEFAULTS:
+        key = "youtube_shorts"
+    return key, SCRIPT_PLATFORM_DEFAULTS[key]
+
+
+def _resolve_series_template(series_intelligence: Dict[str, Any], template_series_key: str) -> Optional[Dict[str, Any]]:
+    rows = series_intelligence.get("series", []) if isinstance(series_intelligence, dict) else []
+    if not isinstance(rows, list) or not rows:
+        return None
+
+    requested = str(template_series_key or "").strip().lower()
+    if requested:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            key_value = str(row.get("series_key", "")).strip().lower()
+            slug_value = str(row.get("series_key_slug", "")).strip().lower()
+            if requested in {key_value, slug_value}:
+                return row
+    first = rows[0]
+    return first if isinstance(first, dict) else None
+
+
+def _resolve_hook_template(blueprint: Dict[str, Any], platform_key: str) -> str:
+    hook_data = blueprint.get("hook_intelligence", {}) if isinstance(blueprint, dict) else {}
+    if not isinstance(hook_data, dict):
+        return HOOK_TEMPLATE_MAP["Direct Outcome Hook"]
+
+    format_key = "short_form" if platform_key in SHORT_PLATFORMS else "long_form"
+    format_breakdown = hook_data.get("format_breakdown", {})
+    if isinstance(format_breakdown, dict):
+        profile = format_breakdown.get(format_key, {})
+        if isinstance(profile, dict):
+            recommended = profile.get("recommended_hooks", [])
+            if isinstance(recommended, list):
+                for template in recommended:
+                    value = str(template).strip()
+                    if value:
+                        return value
+            common = profile.get("common_patterns", [])
+            if isinstance(common, list):
+                for pattern in common:
+                    if isinstance(pattern, dict):
+                        template = str(pattern.get("template", "")).strip()
+                        if template:
+                            return template
+
+    recommended_hooks = hook_data.get("recommended_hooks", [])
+    if isinstance(recommended_hooks, list):
+        for template in recommended_hooks:
+            value = str(template).strip()
+            if value:
+                return value
+
+    return HOOK_TEMPLATE_MAP["Direct Outcome Hook"]
+
+
+class _SafeTemplateDict(dict):
+    def __missing__(self, key: str) -> str:
+        return f"{{{key}}}"
+
+
+def _render_hook_template(template: str, topic: str, audience: str, objective: str) -> str:
+    template_text = str(template or HOOK_TEMPLATE_MAP["Direct Outcome Hook"]).strip()
+    objective_text = str(objective or "more views and stronger retention").strip()
+    topic_text = str(topic or "your niche").strip()
+    audience_text = str(audience or "your audience").strip()
+
+    token_values = _SafeTemplateDict(
+        pain_point=f"{topic_text} content underperforming",
+        result=objective_text,
+        timeframe="30 days",
+        number="3",
+        option_a=f"{topic_text} quick tips",
+        option_b=f"{topic_text} deep dives",
+        audience=audience_text,
+        year=str(datetime.now(timezone.utc).year),
+        topic=topic_text,
+        tactic=f"{topic_text} posting framework",
+        duration="14 days",
+        outcome=objective_text,
+        common_obstacle="guesswork",
+    )
+    try:
+        rendered = template_text.format_map(token_values)
+    except Exception:
+        rendered = template_text
+    return re.sub(r"\s+", " ", rendered).strip()
+
+
+def _series_title(mode: str, niche: str, topic_seed: str, template: Optional[Dict[str, Any]]) -> str:
+    if mode == "competitor_template" and template:
+        return f"{template.get('series_key', 'Competitor Series')} Remix"
+    base = str(niche or topic_seed or "Growth").strip()
+    return f"{base.title()} Sprint Series"
+
+
+def _series_plan_episode_outline(index: int) -> Tuple[str, str, str]:
+    blueprints = [
+        ("Myth Breakdown", "Expose a common wrong assumption with fast proof.", "Show one before/after screenshot or stat."),
+        ("Proof Stack", "Show one tactic and immediate measurable outcome.", "Use one concrete metric within first 6 seconds."),
+        ("Framework", "Teach a repeatable 3-step process viewers can copy today.", "Add numbered on-screen steps."),
+        ("Case Study", "Walk through a single example and explain why it worked.", "Use timestamps or chapter cards."),
+        ("Mistakes", "List mistakes causing weak retention and how to fix them.", "Contrast weak vs strong execution."),
+        ("Optimization", "Improve packaging, pacing, and CTA in one pass.", "Show edits side-by-side."),
+        ("Trend Adaptation", "Apply the framework to a timely topic in your niche.", "Tie the trend to a concrete user pain point."),
+        ("Audience Q&A", "Answer one recurring question and convert it into a framework.", "Use a comment screenshot as the opener."),
+        ("Challenge", "Run a short experiment and report outcome honestly.", "Commit to a deadline and show final numbers."),
+        ("Checklist", "Deliver a final checklist episode to lock in consistency.", "Provide a downloadable or save-friendly summary."),
+    ]
+    selected = blueprints[(max(index, 1) - 1) % len(blueprints)]
+    return selected[0], selected[1], selected[2]
+
+
+def _build_series_plan(blueprint: Dict[str, Any], request: Dict[str, Any]) -> Dict[str, Any]:
+    mode = str(request.get("mode", "scratch")).strip()
+    if mode not in {"scratch", "competitor_template"}:
+        mode = "scratch"
+
+    platform_key, platform_defaults = _resolve_platform(request.get("platform"))
+    episodes_count = _safe_int(request.get("episodes", 5), 5)
+    episodes_count = min(max(episodes_count, 3), 12)
+
+    niche = str(request.get("niche", "")).strip()
+    audience = str(request.get("audience", "")).strip() or "creators in your niche"
+    objective = str(request.get("objective", "")).strip() or "increase watch time, shares, and follower growth"
+
+    winner_signals = blueprint.get("winner_pattern_signals", {}) if isinstance(blueprint, dict) else {}
+    top_topics = winner_signals.get("top_topics_by_velocity", []) if isinstance(winner_signals, dict) else []
+    top_topic = "creator growth"
+    if isinstance(top_topics, list) and top_topics:
+        top_topic = str(top_topics[0].get("topic", top_topic)).strip() or top_topic
+    topic_seed = niche or top_topic
+
+    series_intelligence = blueprint.get("series_intelligence", {}) if isinstance(blueprint, dict) else {}
+    template_series = _resolve_series_template(
+        series_intelligence if isinstance(series_intelligence, dict) else {},
+        str(request.get("template_series_key", "")),
+    )
+    if mode == "competitor_template" and not template_series:
+        mode = "scratch"
+
+    title = _series_title(mode, niche, topic_seed, template_series)
+    hook_template = _resolve_hook_template(blueprint, platform_key)
+    cadence = "3 posts/week" if platform_key in SHORT_PLATFORMS else "2 posts/week"
+
+    episodes: List[Dict[str, Any]] = []
+    for idx in range(1, episodes_count + 1):
+        outline_title, goal, proof_idea = _series_plan_episode_outline(idx)
+        working_title = f"{title} Ep {idx}: {outline_title} for {topic_seed.title()}"
+        episodes.append(
+            {
+                "episode_number": idx,
+                "working_title": working_title,
+                "hook_template": hook_template,
+                "content_goal": goal,
+                "proof_idea": proof_idea,
+                "duration_target_s": _safe_int(platform_defaults.get("duration_target_s", 45), 45),
+                "cta": str(platform_defaults.get("cta", "comment_prompt")),
+            }
+        )
+
+    why_items = [
+        "The plan reuses competitor-winning hook structures but keeps your own angle and examples.",
+        "Episodes are sequenced to maximize repeat viewing and follow-through across the series.",
+        f"Cadence and duration are optimized for {platform_key.replace('_', ' ')} behavior patterns.",
+    ]
+    if template_series:
+        why_items.append(
+            f"Template source '{template_series.get('series_key', 'Competitor Series')}' already shows repeated velocity in the tracked competitor set."
+        )
+
+    response: Dict[str, Any] = {
+        "mode": mode,
+        "series_title": title,
+        "series_thesis": (
+            f"Create a repeatable {episodes_count}-episode arc around '{topic_seed}' for {audience}, "
+            f"with each episode pushing toward {objective}."
+        ),
+        "platform": platform_key,
+        "episodes_count": episodes_count,
+        "publishing_cadence": cadence,
+        "success_metrics": [
+            "3-second hold rate",
+            "average view duration",
+            "shares + saves per 1,000 views",
+            "comments per 1,000 views",
+        ],
+        "why_this_will_work": why_items,
+        "episodes": episodes,
+    }
+    if template_series:
+        response["source_template"] = {
+            "series_key": str(template_series.get("series_key", "")),
+            "video_count": _safe_int(template_series.get("video_count", 0)),
+            "competitor_count": _safe_int(template_series.get("competitor_count", 0)),
+            "channels": _safe_list_of_strings(template_series.get("channels", [])),
+            "top_titles": _safe_list_of_strings(template_series.get("top_titles", [])),
+        }
+    return response
+
+
+def _build_script_sections(
+    platform_key: str,
+    topic: str,
+    objective: str,
+    audience: str,
+    hook_line: str,
+    duration_target_s: int,
+) -> List[Dict[str, str]]:
+    if platform_key in SHORT_PLATFORMS:
+        return [
+            {"section": "Hook", "time_window": "0-2s", "text": hook_line},
+            {
+                "section": "Proof",
+                "time_window": "2-6s",
+                "text": f"Show one concrete result tied to {topic} so viewers trust the claim instantly.",
+            },
+            {
+                "section": "Value Stack",
+                "time_window": "6-18s",
+                "text": f"Deliver 2-3 fast steps your {audience} can apply today to achieve {objective}.",
+            },
+            {
+                "section": "Pattern Interrupt",
+                "time_window": "18-22s",
+                "text": "Switch camera angle or visual format and restate the biggest insight in one line.",
+            },
+            {
+                "section": "CTA",
+                "time_window": f"22-{duration_target_s}s",
+                "text": "Ask for one action only: comment a keyword to get the checklist.",
+            },
+        ]
+
+    return [
+        {"section": "Hook + Promise", "time_window": "0-12s", "text": hook_line},
+        {
+            "section": "Proof + Context",
+            "time_window": "12-45s",
+            "text": f"Show receipts and explain why this matters for {audience}.",
+        },
+        {
+            "section": "Framework",
+            "time_window": "45-210s",
+            "text": f"Break the method into 3 steps and tie each step directly to {objective}.",
+        },
+        {
+            "section": "Case Example",
+            "time_window": "210-330s",
+            "text": f"Walk through one practical example in {topic} and highlight the decision points.",
+        },
+        {
+            "section": "CTA",
+            "time_window": f"330-{duration_target_s}s",
+            "text": "Ask one clear CTA: comment your niche for a custom follow-up framework.",
+        },
+    ]
+
+
+def _build_viral_script(blueprint: Dict[str, Any], request: Dict[str, Any]) -> Dict[str, Any]:
+    platform_key, platform_defaults = _resolve_platform(request.get("platform"))
+    topic = str(request.get("topic", "")).strip() or "content growth"
+    audience = str(request.get("audience", "")).strip() or "creators"
+    objective = str(request.get("objective", "")).strip() or "higher watch time and shares"
+    tone = str(request.get("tone", "bold")).strip().lower()
+
+    desired_duration = _safe_int(request.get("desired_duration_s"), 0)
+    default_duration = _safe_int(platform_defaults.get("duration_target_s", 45), 45)
+    duration_target_s = desired_duration if desired_duration > 0 else default_duration
+    duration_target_s = min(max(duration_target_s, 15), 900)
+
+    hook_template = _resolve_hook_template(blueprint, platform_key)
+    hook_line = _render_hook_template(hook_template, topic=topic, audience=audience, objective=objective)
+    if tone == "conversational":
+        hook_line = f"Quick one: {hook_line}"
+    elif tone == "expert":
+        hook_line = f"Data-backed take: {hook_line}"
+
+    sections = _build_script_sections(
+        platform_key=platform_key,
+        topic=topic,
+        objective=objective,
+        audience=audience,
+        hook_line=hook_line,
+        duration_target_s=duration_target_s,
+    )
+
+    on_screen_text = [
+        hook_line,
+        f"{topic.title()} Framework: 3 steps",
+        f"Comment 'PLAYBOOK' for the checklist",
+    ]
+    shot_list = [
+        "Frame 1: bold hook text + direct eye contact.",
+        "Frame 2: proof visual (analytics screenshot or before/after).",
+        "Frame 3: fast step list with numbered overlays.",
+        "Final frame: single CTA card with high contrast text.",
+    ]
+    caption_options = [
+        f"{topic.title()} is not random. Here is the exact playbook I use for {objective}.",
+        f"If your {topic} videos stall, run this sequence and track retention after 72 hours.",
+        f"Steal this {topic} framework and comment PLAYBOOK if you want the checklist version.",
+    ]
+
+    hashtags = []
+    for token in _extract_topic_keywords(topic):
+        normalized = re.sub(r"[^a-zA-Z0-9]", "", token)
+        if not normalized:
+            continue
+        hashtags.append(f"#{normalized[:24]}")
+    for default_tag in ["#creatorgrowth", "#contentstrategy", "#viralvideo"]:
+        if default_tag not in hashtags:
+            hashtags.append(default_tag)
+    hashtags = hashtags[:8]
+
+    hook_strength = 72
+    if re.search(r"\b\d+\b", hook_line):
+        hook_strength += 10
+    if "?" in hook_line:
+        hook_strength += 6
+    if any(keyword in hook_line.lower() for keyword in ("how", "why", "secret", "mistake", "stop")):
+        hook_strength += 8
+    hook_strength = min(hook_strength, 98)
+
+    retention_design = 70
+    if platform_key in SHORT_PLATFORMS:
+        retention_design += 12
+    if len(sections) >= 5:
+        retention_design += 8
+    retention_design = min(retention_design, 96)
+
+    shareability = 68
+    if "checklist" in " ".join(caption_options).lower():
+        shareability += 10
+    if "comment" in sections[-1]["text"].lower():
+        shareability += 8
+    shareability = min(shareability, 95)
+
+    overall = round((hook_strength * 0.4) + (retention_design * 0.35) + (shareability * 0.25), 1)
+
+    velocity_actions = blueprint.get("velocity_actions", []) if isinstance(blueprint, dict) else []
+    improvement_notes = []
+    if isinstance(velocity_actions, list):
+        for action in velocity_actions[:2]:
+            if isinstance(action, dict):
+                title = str(action.get("title", "")).strip()
+                if title:
+                    improvement_notes.append(title)
+    if not improvement_notes:
+        improvement_notes = [
+            "Test two hook-line variants against the same edit structure.",
+            "Cut any setup that delays payoff beyond the hook deadline.",
+            "Keep one CTA objective to avoid dilution.",
+        ]
+
+    response: Dict[str, Any] = {
+        "platform": platform_key,
+        "topic": topic,
+        "audience": audience,
+        "objective": objective,
+        "tone": tone,
+        "duration_target_s": duration_target_s,
+        "hook_deadline_s": _safe_int(platform_defaults.get("hook_deadline_s", 2), 2),
+        "hook_template": hook_template,
+        "hook_line": hook_line,
+        "script_sections": sections,
+        "on_screen_text": on_screen_text,
+        "shot_list": shot_list,
+        "caption_options": caption_options,
+        "hashtags": hashtags,
+        "cta_line": sections[-1]["text"],
+        "score_breakdown": {
+            "hook_strength": hook_strength,
+            "retention_design": retention_design,
+            "shareability": shareability,
+            "overall": overall,
+        },
+        "improvement_notes": improvement_notes,
+    }
+
+    template_series = _resolve_series_template(
+        blueprint.get("series_intelligence", {}) if isinstance(blueprint, dict) else {},
+        str(request.get("template_series_key", "")),
+    )
+    if template_series:
+        response["competitor_template"] = {
+            "series_key": str(template_series.get("series_key", "")),
+            "channels": _safe_list_of_strings(template_series.get("channels", [])),
+            "top_titles": _safe_list_of_strings(template_series.get("top_titles", [])),
+        }
+
+    return response
+
+
+async def get_competitor_series_service(user_id: str, db: AsyncSession) -> Dict[str, Any]:
+    blueprint = await generate_blueprint_service(user_id, db, use_llm=False)
+    series_intelligence = blueprint.get("series_intelligence", {})
+    if isinstance(series_intelligence, dict):
+        return series_intelligence
+    return _empty_series_intelligence()
+
+
+async def generate_series_plan_service(user_id: str, request: Dict[str, Any], db: AsyncSession) -> Dict[str, Any]:
+    blueprint = await generate_blueprint_service(user_id, db, use_llm=False)
+    return _build_series_plan(blueprint, request)
+
+
+async def generate_viral_script_service(user_id: str, request: Dict[str, Any], db: AsyncSession) -> Dict[str, Any]:
+    blueprint = await generate_blueprint_service(user_id, db, use_llm=False)
+    return _build_viral_script(blueprint, request)
 
 
 async def _resolve_user_channel(db: AsyncSession, user_id: str) -> Tuple[Optional[str], str]:
@@ -1259,7 +1885,7 @@ async def _resolve_user_channel(db: AsyncSession, user_id: str) -> Tuple[Optiona
     return None, "User Channel"
 
 
-async def generate_blueprint_service(user_id: str, db: AsyncSession) -> Dict[str, Any]:
+async def generate_blueprint_service(user_id: str, db: AsyncSession, use_llm: bool = True) -> Dict[str, Any]:
     """
     Generate a gap analysis and content strategy blueprint.
     """
@@ -1272,6 +1898,7 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession) -> Dict[str
         empty_winner_signals = _build_winner_pattern_signals([])
         empty_framework = _build_framework_playbook([])
         empty_hooks = _empty_hook_intelligence()
+        empty_series = _empty_series_intelligence()
         return {
             "gap_analysis": ["Add competitors to generate a blueprint."],
             "content_pillars": [],
@@ -1282,6 +1909,7 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession) -> Dict[str
             "repurpose_plan": _build_repurpose_plan(empty_hooks, empty_winner_signals, empty_framework),
             "transcript_quality": _build_transcript_quality([]),
             "velocity_actions": [],
+            "series_intelligence": empty_series,
         }
 
     client = _get_youtube_client()
@@ -1393,6 +2021,7 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession) -> Dict[str
     framework_playbook = _build_framework_playbook(competitor_videos)
     repurpose_plan = _build_repurpose_plan(hook_intelligence, winner_pattern_signals, framework_playbook)
     transcript_quality = _build_transcript_quality(competitor_videos)
+    series_intelligence = _build_series_intelligence(competitor_videos)
     user_framework_playbook = _build_framework_playbook(user_videos)
     velocity_actions = _build_velocity_actions(
         winner_signals=winner_pattern_signals,
@@ -1445,7 +2074,11 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession) -> Dict[str
         "repurpose_plan": repurpose_plan,
         "transcript_quality": transcript_quality,
         "velocity_actions": velocity_actions,
+        "series_intelligence": series_intelligence,
     }
+
+    if not use_llm:
+        return deterministic_blueprint
 
     prompt = f"""
     Analyze these YouTube video performance stats to create a content blueprint.
@@ -1478,6 +2111,10 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession) -> Dict[str
        - Summarize transcript source coverage and fallback ratio.
     9. Velocity Actions:
        - Output exactly 3 "do this next" actions with evidence + concrete steps.
+    10. Series Intelligence:
+       - Detect recurring competitor series from repeated title anchors.
+       - Rank detected series by average views/day.
+       - Include top episode titles and channel examples.
 
     Return JSON:
     {{
@@ -1579,7 +2216,25 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession) -> Dict[str
                 "target_metric": "...",
                 "expected_effect": "..."
             }}
-        ]
+        ],
+        "series_intelligence": {{
+            "summary": "...",
+            "sample_size": 60,
+            "total_detected_series": 4,
+            "series": [
+                {{
+                    "series_key": "...",
+                    "series_key_slug": "...",
+                    "video_count": 5,
+                    "competitor_count": 2,
+                    "avg_views": 120000,
+                    "avg_views_per_day": 4200.2,
+                    "top_titles": ["..."],
+                    "channels": ["..."],
+                    "recommended_angle": "..."
+                }}
+            ]
+        }}
     }}
     """
 

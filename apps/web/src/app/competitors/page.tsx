@@ -8,11 +8,17 @@ import {
     CompetitorSuggestionSortBy,
     CompetitorSuggestionSortDirection,
     Competitor,
+    generateSeriesPlan,
+    generateViralScript,
     generateBlueprint,
+    getCompetitorSeriesInsights,
     getCompetitors,
     recommendCompetitors,
     RecommendedCompetitor,
     removeCompetitor,
+    SeriesIntelligence,
+    SeriesPlanResult,
+    ViralScriptResult,
 } from "@/lib/api";
 import { BlueprintDisplay } from "@/components/blueprint-display";
 
@@ -54,6 +60,32 @@ export default function CompetitorsPage() {
     const [suggestionTotalCount, setSuggestionTotalCount] = useState(0);
     const [suggestionHasMore, setSuggestionHasMore] = useState(false);
 
+    const [seriesInsights, setSeriesInsights] = useState<SeriesIntelligence | null>(null);
+    const [loadingSeries, setLoadingSeries] = useState(false);
+    const [seriesError, setSeriesError] = useState<string | null>(null);
+
+    const [seriesMode, setSeriesMode] = useState<"scratch" | "competitor_template">("scratch");
+    const [seriesNiche, setSeriesNiche] = useState("AI News");
+    const [seriesAudience, setSeriesAudience] = useState("Founders and creators building with AI");
+    const [seriesObjective, setSeriesObjective] = useState("increase shares and average view duration");
+    const [seriesPlatform, setSeriesPlatform] = useState<"youtube_shorts" | "instagram_reels" | "tiktok" | "youtube_long">("youtube_shorts");
+    const [seriesEpisodes, setSeriesEpisodes] = useState(5);
+    const [seriesTemplateKey, setSeriesTemplateKey] = useState("");
+    const [seriesPlan, setSeriesPlan] = useState<SeriesPlanResult | null>(null);
+    const [planningSeries, setPlanningSeries] = useState(false);
+    const [seriesPlanError, setSeriesPlanError] = useState<string | null>(null);
+
+    const [scriptPlatform, setScriptPlatform] = useState<"youtube_shorts" | "instagram_reels" | "tiktok" | "youtube_long">("youtube_shorts");
+    const [scriptTopic, setScriptTopic] = useState("AI News hook formulas");
+    const [scriptAudience, setScriptAudience] = useState("Creators who want more reach");
+    const [scriptObjective, setScriptObjective] = useState("higher retention and shares");
+    const [scriptTone, setScriptTone] = useState<"bold" | "expert" | "conversational">("bold");
+    const [scriptTemplateKey, setScriptTemplateKey] = useState("");
+    const [scriptDuration, setScriptDuration] = useState<number | "">(45);
+    const [scriptResult, setScriptResult] = useState<ViralScriptResult | null>(null);
+    const [generatingScript, setGeneratingScript] = useState(false);
+    const [scriptError, setScriptError] = useState<string | null>(null);
+
     useEffect(() => {
         fetchCompetitors();
     }, []);
@@ -66,15 +98,52 @@ export default function CompetitorsPage() {
         void fetchSuggestedCompetitors(suggestionNiche, 1);
     }, [suggestionSortKey, sortDirection]);
 
+    useEffect(() => {
+        const candidates = seriesInsights?.series || blueprint?.series_intelligence?.series || [];
+        if (candidates.length === 0) {
+            setSeriesTemplateKey("");
+            setScriptTemplateKey("");
+            return;
+        }
+        const firstSeries = candidates[0];
+        const firstKey = firstSeries.series_key_slug || firstSeries.series_key;
+        if (!seriesTemplateKey) {
+            setSeriesTemplateKey(firstKey);
+        }
+        if (!scriptTemplateKey) {
+            setScriptTemplateKey(firstKey);
+        }
+    }, [seriesInsights, blueprint, seriesTemplateKey, scriptTemplateKey]);
+
     async function fetchCompetitors() {
         try {
             const comps = await getCompetitors();
             setCompetitors(comps);
             setError(null);
+            if (comps.length > 0) {
+                await fetchSeriesInsights();
+            } else {
+                setSeriesInsights(null);
+                setSeriesTemplateKey("");
+                setScriptTemplateKey("");
+            }
         } catch (err) {
             setError("Could not connect to API. Make sure the backend is running.");
         } finally {
             setLoading(false);
+        }
+    }
+
+    async function fetchSeriesInsights() {
+        setLoadingSeries(true);
+        setSeriesError(null);
+        try {
+            const response = await getCompetitorSeriesInsights();
+            setSeriesInsights(response);
+        } catch (err: any) {
+            setSeriesError(err.message || "Failed to load competitor series insights");
+        } finally {
+            setLoadingSeries(false);
         }
     }
 
@@ -132,6 +201,7 @@ export default function CompetitorsPage() {
             setSuggestionNiche(autoNiche);
             setSuggestionPage(1);
             await fetchSuggestedCompetitors(autoNiche, 1);
+            await fetchSeriesInsights();
         } catch (err: any) {
             setError(err.message || "Failed to add competitor");
         } finally {
@@ -142,7 +212,15 @@ export default function CompetitorsPage() {
     async function handleRemoveCompetitor(id: string) {
         try {
             await removeCompetitor(id);
-            setCompetitors((prev) => prev.filter((c) => c.id !== id));
+            const nextCompetitors = competitors.filter((c) => c.id !== id);
+            setCompetitors(nextCompetitors);
+            if (nextCompetitors.length > 0) {
+                await fetchSeriesInsights();
+            } else {
+                setSeriesInsights(null);
+                setSeriesTemplateKey("");
+                setScriptTemplateKey("");
+            }
         } catch (err: any) {
             setError(err.message || "Failed to remove competitor");
         }
@@ -154,6 +232,9 @@ export default function CompetitorsPage() {
         try {
             const result = await generateBlueprint();
             setBlueprint(result);
+            if (result.series_intelligence) {
+                setSeriesInsights(result.series_intelligence);
+            }
         } catch (err: any) {
             setError(err.message || "Failed to generate blueprint");
         } finally {
@@ -205,11 +286,69 @@ export default function CompetitorsPage() {
         }
     }
 
+    async function handleGenerateSeriesPlan(e: React.FormEvent) {
+        e.preventDefault();
+        setSeriesPlanError(null);
+        setPlanningSeries(true);
+        try {
+            const selectedTemplate =
+                seriesMode === "competitor_template"
+                    ? (seriesTemplateKey || seriesInsights?.series?.[0]?.series_key_slug || "")
+                    : undefined;
+            const response = await generateSeriesPlan({
+                mode: seriesMode,
+                niche: seriesNiche.trim() || "creator growth",
+                audience: seriesAudience.trim() || "creators in your niche",
+                objective: seriesObjective.trim() || "increase views and retention",
+                platform: seriesPlatform,
+                episodes: seriesEpisodes,
+                templateSeriesKey: selectedTemplate,
+            });
+            setSeriesPlan(response);
+            if (response.source_template?.series_key && !seriesTemplateKey) {
+                setSeriesTemplateKey(response.source_template.series_key);
+            }
+        } catch (err: any) {
+            setSeriesPlanError(err.message || "Failed to generate series plan");
+            setSeriesPlan(null);
+        } finally {
+            setPlanningSeries(false);
+        }
+    }
+
+    async function handleGenerateScript(e: React.FormEvent) {
+        e.preventDefault();
+        if (!scriptTopic.trim()) {
+            setScriptError("Enter a topic first.");
+            return;
+        }
+        setScriptError(null);
+        setGeneratingScript(true);
+        try {
+            const response = await generateViralScript({
+                platform: scriptPlatform,
+                topic: scriptTopic.trim(),
+                audience: scriptAudience.trim() || "creators",
+                objective: scriptObjective.trim() || "higher retention and shares",
+                tone: scriptTone,
+                templateSeriesKey: scriptTemplateKey || undefined,
+                desiredDurationS: scriptDuration === "" ? undefined : Number(scriptDuration),
+            });
+            setScriptResult(response);
+        } catch (err: any) {
+            setScriptError(err.message || "Failed to generate script");
+            setScriptResult(null);
+        } finally {
+            setGeneratingScript(false);
+        }
+    }
+
     const blueprintForDisplay: BlueprintResult = blueprint || {
         gap_analysis: [],
         content_pillars: [],
         video_ideas: [],
     };
+    const seriesRows = seriesInsights?.series || blueprint?.series_intelligence?.series || [];
 
     return (
         <div className="min-h-screen bg-[#e8e8e8] px-3 py-4 md:px-8 md:py-6">
@@ -336,6 +475,321 @@ export default function CompetitorsPage() {
                                 <BlueprintDisplay blueprint={blueprintForDisplay} loading={generating} />
                             </div>
                         )}
+
+                        <div className="mb-6 grid gap-4 2xl:grid-cols-2">
+                            <div className="rounded-3xl border border-[#dcdcdc] bg-white p-5 shadow-[0_12px_30px_rgba(0,0,0,0.05)]">
+                                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                    <h2 className="text-lg font-bold text-[#1f1f1f]">Competitor Series Radar</h2>
+                                    <button
+                                        type="button"
+                                        onClick={() => void fetchSeriesInsights()}
+                                        disabled={loadingSeries || competitors.length === 0}
+                                        className="rounded-lg border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-1.5 text-xs text-[#444] hover:bg-[#efefef] disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                        {loadingSeries ? "Refreshing..." : "Refresh"}
+                                    </button>
+                                </div>
+                                <p className="mb-3 text-xs text-[#6d6d6d]">
+                                    Detects recurring content series across tracked competitors so you can model repeatable audience loops.
+                                </p>
+                                {seriesError && (
+                                    <div className="mb-3 rounded-xl border border-[#e3c4c4] bg-[#fff1f1] px-3 py-2 text-xs text-[#7f3a3a]">
+                                        {seriesError}
+                                    </div>
+                                )}
+                                {loadingSeries && (
+                                    <p className="text-xs text-[#777]">Scanning competitor libraries for recurring series...</p>
+                                )}
+                                {!loadingSeries && seriesRows.length > 0 && (
+                                    <div className="space-y-3">
+                                        {seriesRows.slice(0, 6).map((series) => (
+                                            <div key={series.series_key_slug || series.series_key} className="rounded-xl border border-[#dfdfdf] bg-[#fafafa] p-3">
+                                                <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                                                    <p className="text-sm font-semibold text-[#232323]">{series.series_key}</p>
+                                                    <span className="text-[11px] text-[#6f6f6f]">
+                                                        {series.video_count} videos · {series.competitor_count} channels
+                                                    </span>
+                                                </div>
+                                                <p className="text-[11px] text-[#666]">
+                                                    Avg views: {formatMetric(series.avg_views)} · Avg views/day: {formatMetric(Math.round(series.avg_views_per_day))}
+                                                </p>
+                                                {series.top_titles.length > 0 && (
+                                                    <p className="mt-1 line-clamp-2 text-[11px] text-[#7a7a7a]">
+                                                        Top episodes: {series.top_titles.slice(0, 2).join(" | ")}
+                                                    </p>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                                {!loadingSeries && seriesRows.length === 0 && (
+                                    <p className="text-xs text-[#7a7a7a]">
+                                        No recurring series detected yet. Add more competitors or run blueprint after expanding your list.
+                                    </p>
+                                )}
+                            </div>
+
+                            <div className="rounded-3xl border border-[#dcdcdc] bg-white p-5 shadow-[0_12px_30px_rgba(0,0,0,0.05)]">
+                                <h2 className="mb-2 text-lg font-bold text-[#1f1f1f]">Series Planner</h2>
+                                <p className="mb-3 text-xs text-[#6d6d6d]">
+                                    Build a repeatable series from scratch or remix a detected competitor series template.
+                                </p>
+                                <form onSubmit={handleGenerateSeriesPlan} className="space-y-3">
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <div>
+                                            <label className="mb-1 block text-[11px] uppercase tracking-wide text-[#777]">Mode</label>
+                                            <select
+                                                value={seriesMode}
+                                                onChange={(e) => setSeriesMode(e.target.value as "scratch" | "competitor_template")}
+                                                className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                            >
+                                                <option value="scratch">From Scratch</option>
+                                                <option value="competitor_template">Competitor Template</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="mb-1 block text-[11px] uppercase tracking-wide text-[#777]">Platform</label>
+                                            <select
+                                                value={seriesPlatform}
+                                                onChange={(e) => setSeriesPlatform(e.target.value as "youtube_shorts" | "instagram_reels" | "tiktok" | "youtube_long")}
+                                                className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                            >
+                                                <option value="youtube_shorts">YouTube Shorts</option>
+                                                <option value="instagram_reels">Instagram Reels</option>
+                                                <option value="tiktok">TikTok</option>
+                                                <option value="youtube_long">YouTube Long</option>
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    <input
+                                        type="text"
+                                        value={seriesNiche}
+                                        onChange={(e) => setSeriesNiche(e.target.value)}
+                                        placeholder="Series niche, e.g. AI News"
+                                        className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-xs text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                    />
+                                    <input
+                                        type="text"
+                                        value={seriesAudience}
+                                        onChange={(e) => setSeriesAudience(e.target.value)}
+                                        placeholder="Audience"
+                                        className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-xs text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                    />
+                                    <input
+                                        type="text"
+                                        value={seriesObjective}
+                                        onChange={(e) => setSeriesObjective(e.target.value)}
+                                        placeholder="Objective"
+                                        className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-xs text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                    />
+
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <div>
+                                            <label className="mb-1 block text-[11px] uppercase tracking-wide text-[#777]">Episodes</label>
+                                            <input
+                                                type="number"
+                                                min={3}
+                                                max={12}
+                                                value={seriesEpisodes}
+                                                onChange={(e) => setSeriesEpisodes(Math.min(12, Math.max(3, Number(e.target.value) || 3)))}
+                                                className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="mb-1 block text-[11px] uppercase tracking-wide text-[#777]">Template</label>
+                                            <select
+                                                value={seriesTemplateKey}
+                                                onChange={(e) => setSeriesTemplateKey(e.target.value)}
+                                                disabled={seriesRows.length === 0}
+                                                className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                                            >
+                                                <option value="">Auto-select best match</option>
+                                                {seriesRows.map((series) => (
+                                                    <option key={series.series_key_slug || series.series_key} value={series.series_key_slug || series.series_key}>
+                                                        {series.series_key}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    <button
+                                        type="submit"
+                                        disabled={planningSeries}
+                                        className="w-full rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-sm font-medium text-[#2f2f2f] hover:bg-[#efefef] disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                        {planningSeries ? "Building..." : "Generate Series Plan"}
+                                    </button>
+                                </form>
+                                {seriesPlanError && (
+                                    <div className="mt-3 rounded-xl border border-[#e3c4c4] bg-[#fff1f1] px-3 py-2 text-xs text-[#7f3a3a]">
+                                        {seriesPlanError}
+                                    </div>
+                                )}
+                                {seriesPlan && (
+                                    <div className="mt-4 rounded-xl border border-[#dfdfdf] bg-[#fafafa] p-3">
+                                        <p className="text-sm font-semibold text-[#222]">{seriesPlan.series_title}</p>
+                                        <p className="mt-1 text-[11px] text-[#666]">{seriesPlan.series_thesis}</p>
+                                        <p className="mt-1 text-[11px] text-[#777]">
+                                            {seriesPlan.platform.replace("_", " ")} · {seriesPlan.episodes_count} episodes · {seriesPlan.publishing_cadence}
+                                        </p>
+                                        <div className="mt-2 space-y-2">
+                                            {seriesPlan.episodes.slice(0, 4).map((episode) => (
+                                                <div key={episode.episode_number} className="rounded-lg border border-[#e3e3e3] bg-white p-2">
+                                                    <p className="text-xs font-semibold text-[#202020]">{episode.working_title}</p>
+                                                    <p className="text-[11px] text-[#666]">{episode.content_goal}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="mb-6 rounded-3xl border border-[#dcdcdc] bg-white p-5 shadow-[0_12px_30px_rgba(0,0,0,0.05)]">
+                            <h2 className="mb-2 text-lg font-bold text-[#1f1f1f]">Viral Script Studio</h2>
+                            <p className="mb-3 text-xs text-[#6d6d6d]">
+                                Generate platform-aware short/reel/tiktok scripts with hook, section timing, and edit priorities.
+                            </p>
+                            <form onSubmit={handleGenerateScript} className="grid gap-3 md:grid-cols-2">
+                                <div>
+                                    <label className="mb-1 block text-[11px] uppercase tracking-wide text-[#777]">Topic</label>
+                                    <input
+                                        type="text"
+                                        value={scriptTopic}
+                                        onChange={(e) => setScriptTopic(e.target.value)}
+                                        placeholder="e.g. AI News hook formulas"
+                                        className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-xs text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="mb-1 block text-[11px] uppercase tracking-wide text-[#777]">Platform</label>
+                                    <select
+                                        value={scriptPlatform}
+                                        onChange={(e) => setScriptPlatform(e.target.value as "youtube_shorts" | "instagram_reels" | "tiktok" | "youtube_long")}
+                                        className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                    >
+                                        <option value="youtube_shorts">YouTube Shorts</option>
+                                        <option value="instagram_reels">Instagram Reels</option>
+                                        <option value="tiktok">TikTok</option>
+                                        <option value="youtube_long">YouTube Long</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="mb-1 block text-[11px] uppercase tracking-wide text-[#777]">Audience</label>
+                                    <input
+                                        type="text"
+                                        value={scriptAudience}
+                                        onChange={(e) => setScriptAudience(e.target.value)}
+                                        className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="mb-1 block text-[11px] uppercase tracking-wide text-[#777]">Objective</label>
+                                    <input
+                                        type="text"
+                                        value={scriptObjective}
+                                        onChange={(e) => setScriptObjective(e.target.value)}
+                                        className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="mb-1 block text-[11px] uppercase tracking-wide text-[#777]">Tone</label>
+                                    <select
+                                        value={scriptTone}
+                                        onChange={(e) => setScriptTone(e.target.value as "bold" | "expert" | "conversational")}
+                                        className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                    >
+                                        <option value="bold">Bold</option>
+                                        <option value="expert">Expert</option>
+                                        <option value="conversational">Conversational</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="mb-1 block text-[11px] uppercase tracking-wide text-[#777]">Duration (seconds)</label>
+                                    <input
+                                        type="number"
+                                        min={15}
+                                        max={900}
+                                        value={scriptDuration}
+                                        onChange={(e) => setScriptDuration(e.target.value === "" ? "" : Number(e.target.value))}
+                                        className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                    />
+                                </div>
+                                <div className="md:col-span-2">
+                                    <label className="mb-1 block text-[11px] uppercase tracking-wide text-[#777]">Use Competitor Series Template (optional)</label>
+                                    <select
+                                        value={scriptTemplateKey}
+                                        onChange={(e) => setScriptTemplateKey(e.target.value)}
+                                        className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                    >
+                                        <option value="">No template</option>
+                                        {seriesRows.map((series) => (
+                                            <option key={series.series_key_slug || series.series_key} value={series.series_key_slug || series.series_key}>
+                                                {series.series_key}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <button
+                                    type="submit"
+                                    disabled={generatingScript}
+                                    className="md:col-span-2 rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-sm font-medium text-[#2f2f2f] hover:bg-[#efefef] disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                    {generatingScript ? "Generating..." : "Generate Viral Script"}
+                                </button>
+                            </form>
+                            {scriptError && (
+                                <div className="mt-3 rounded-xl border border-[#e3c4c4] bg-[#fff1f1] px-3 py-2 text-xs text-[#7f3a3a]">
+                                    {scriptError}
+                                </div>
+                            )}
+                            {scriptResult && (
+                                <div className="mt-4 rounded-xl border border-[#dfdfdf] bg-[#fafafa] p-4">
+                                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                                        <span className="rounded-full border border-[#dcdcdc] bg-white px-2 py-1 text-[11px] text-[#555]">
+                                            Hook: {Math.round(scriptResult.score_breakdown.hook_strength)}
+                                        </span>
+                                        <span className="rounded-full border border-[#dcdcdc] bg-white px-2 py-1 text-[11px] text-[#555]">
+                                            Retention: {Math.round(scriptResult.score_breakdown.retention_design)}
+                                        </span>
+                                        <span className="rounded-full border border-[#dcdcdc] bg-white px-2 py-1 text-[11px] text-[#555]">
+                                            Shareability: {Math.round(scriptResult.score_breakdown.shareability)}
+                                        </span>
+                                        <span className="rounded-full border border-[#dcdcdc] bg-white px-2 py-1 text-[11px] text-[#555]">
+                                            Overall: {Math.round(scriptResult.score_breakdown.overall)}
+                                        </span>
+                                    </div>
+                                    <p className="text-sm font-semibold text-[#202020]">{scriptResult.hook_line}</p>
+                                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                        <div className="space-y-2">
+                                            <p className="text-xs font-semibold uppercase tracking-wide text-[#777]">Script Sections</p>
+                                            {scriptResult.script_sections.map((section, idx) => (
+                                                <div key={idx} className="rounded-lg border border-[#e3e3e3] bg-white p-2">
+                                                    <p className="text-xs font-semibold text-[#202020]">{section.section} ({section.time_window})</p>
+                                                    <p className="text-[11px] text-[#666]">{section.text}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        <div className="space-y-2">
+                                            <p className="text-xs font-semibold uppercase tracking-wide text-[#777]">Caption Options</p>
+                                            <ul className="space-y-1 text-[11px] text-[#555]">
+                                                {scriptResult.caption_options.slice(0, 3).map((caption, idx) => (
+                                                    <li key={idx}>• {caption}</li>
+                                                ))}
+                                            </ul>
+                                            <p className="pt-2 text-xs font-semibold uppercase tracking-wide text-[#777]">Improvement Notes</p>
+                                            <ul className="space-y-1 text-[11px] text-[#555]">
+                                                {scriptResult.improvement_notes.slice(0, 3).map((note, idx) => (
+                                                    <li key={idx}>• {note}</li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
 
                         {loading && (
                             <div className="rounded-3xl border border-[#dcdcdc] bg-white p-12 text-center shadow-[0_12px_30px_rgba(0,0,0,0.05)]">
