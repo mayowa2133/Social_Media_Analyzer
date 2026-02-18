@@ -41,6 +41,19 @@ class Settings(BaseSettings):
     ENABLE_TIKTOK_CONNECTORS: bool = False
     ENABLE_INSTAGRAM_CONNECTORS: bool = False
     ENABLE_WHISPER_TRANSCRIPTION: bool = False
+    RESEARCH_ENABLED: bool = True
+    OPTIMIZER_V2_ENABLED: bool = True
+    OUTCOME_LEARNING_ENABLED: bool = True
+    BILLING_ENABLED: bool = False
+    ALLOW_EXTERNAL_MEDIA_DOWNLOAD: bool = False
+    FREE_MONTHLY_CREDITS: int = 10
+    CREDIT_COST_RESEARCH_SEARCH: int = 1
+    CREDIT_COST_OPTIMIZER_VARIANTS: int = 2
+    CREDIT_COST_AUDIT_RUN: int = 3
+    STRIPE_SECRET_KEY: str = ""
+    STRIPE_PRICE_ID: str = ""
+    STRIPE_SUCCESS_URL: str = "http://localhost:3000/dashboard?billing=success"
+    STRIPE_CANCEL_URL: str = "http://localhost:3000/dashboard?billing=cancelled"
     
     # Security
     JWT_SECRET: str = "change_me_in_production"

@@ -25,3 +25,4 @@ class Audit(Base):
     
     # Relationships
     user = relationship("User", back_populates="audits")
+    share_links = relationship("ReportShareLink", back_populates="audit", cascade="all, delete-orphan")

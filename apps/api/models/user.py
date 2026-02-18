@@ -32,3 +32,11 @@ class User(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
+    research_collections = relationship("ResearchCollection", back_populates="user", cascade="all, delete-orphan")
+    research_items = relationship("ResearchItem", back_populates="user", cascade="all, delete-orphan")
+    script_variants = relationship("ScriptVariant", back_populates="user", cascade="all, delete-orphan")
+    draft_snapshots = relationship("DraftSnapshot", back_populates="user", cascade="all, delete-orphan")
+    outcome_metrics = relationship("OutcomeMetric", back_populates="user", cascade="all, delete-orphan")
+    calibration_snapshots = relationship("CalibrationSnapshot", back_populates="user", cascade="all, delete-orphan")
+    credit_entries = relationship("CreditLedger", back_populates="user", cascade="all, delete-orphan")
+    report_share_links = relationship("ReportShareLink", back_populates="user", cascade="all, delete-orphan")

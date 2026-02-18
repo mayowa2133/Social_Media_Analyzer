@@ -264,6 +264,26 @@ function buildMockReport(auditId: string) {
                 ],
             },
         },
+        best_edited_variant: {
+            id: "snapshot-report-1",
+            platform: "youtube",
+            variant_id: "variant-1",
+            source_item_id: "research-1",
+            script_preview: "I tested this format and lifted retention. Comment your niche for the template.",
+            baseline_score: 79,
+            rescored_score: 83,
+            delta_score: 4,
+            created_at: "2026-02-12T12:04:00Z",
+            top_detector_improvements: [
+                {
+                    detector_key: "cta_style",
+                    label: "CTA Style",
+                    score: 82,
+                    target_score: 76,
+                    gap: -6,
+                },
+            ],
+        },
         recommendations: [
             "Lead with a clearer value proposition in the first 5 seconds.",
             "Increase pattern interrupts every 20 seconds.",
@@ -274,6 +294,7 @@ function buildMockReport(auditId: string) {
 async function installApiMocks(page: Page) {
     let competitorCount = 0;
     const pollCountByAudit: Record<string, number> = {};
+    const draftSnapshots: any[] = [];
 
     await page.route("http://localhost:8000/**", async (route) => {
         const request = route.request();
@@ -367,6 +388,275 @@ async function installApiMocks(page: Page) {
             return;
         }
 
+        if (method === "GET" && path === "/billing/credits") {
+            await json(200, {
+                balance: 8,
+                period_key: "2026-02",
+                free_monthly_credits: 10,
+                costs: {
+                    research_search: 1,
+                    optimizer_variants: 2,
+                    audit_run: 3,
+                },
+                recent_entries: [],
+            });
+            return;
+        }
+
+        if (method === "POST" && path === "/research/search") {
+            await json(200, {
+                page: 1,
+                limit: 12,
+                total_count: 1,
+                has_more: false,
+                items: [
+                    {
+                        item_id: "research-1",
+                        platform: "youtube",
+                        source_type: "manual_url",
+                        url: "https://www.youtube.com/watch?v=abc123",
+                        external_id: "abc123",
+                        creator_handle: "@mockcreator",
+                        creator_display_name: "Mock Creator",
+                        title: "AI News Hook Breakdown",
+                        caption: "How to hook in first 3 seconds",
+                        metrics: {
+                            views: 120000,
+                            likes: 7400,
+                            comments: 320,
+                            shares: 210,
+                            saves: 180,
+                        },
+                        media_meta: {},
+                        collection_id: "collection-default",
+                    },
+                ],
+                credits: {
+                    charged: 1,
+                    balance_after: 8,
+                },
+            });
+            return;
+        }
+
+        if (method === "GET" && path === "/research/collections") {
+            await json(200, {
+                collections: [
+                    {
+                        id: "collection-default",
+                        name: "Default Collection",
+                        platform: "mixed",
+                        description: "Default collection",
+                        is_system: true,
+                        created_at: "2026-02-12T12:00:00Z",
+                    },
+                ],
+            });
+            return;
+        }
+
+        if (method === "GET" && path === "/optimizer/draft_snapshot") {
+            await json(200, {
+                items: draftSnapshots,
+                count: draftSnapshots.length,
+            });
+            return;
+        }
+
+        if (method === "GET" && path.startsWith("/optimizer/draft_snapshot/")) {
+            const snapshotId = path.split("/").pop() || "";
+            const snapshot = draftSnapshots.find((item) => item.id === snapshotId);
+            if (!snapshot) {
+                await json(404, { detail: "Draft snapshot not found" });
+                return;
+            }
+            await json(200, snapshot);
+            return;
+        }
+
+        if (method === "POST" && path === "/optimizer/variant_generate") {
+            await json(200, {
+                batch_id: "batch-1",
+                generated_at: "2026-02-12T12:00:00Z",
+                generation: {
+                    mode: "ai_first_fallback",
+                    provider: "openai",
+                    model: "gpt-4o",
+                    used_fallback: false,
+                    fallback_reason: null,
+                },
+                credits: {
+                    charged: 2,
+                    balance_after: 6,
+                },
+                variants: [
+                    {
+                        id: "variant-1",
+                        style_key: "variant_a",
+                        label: "Outcome + Proof",
+                        rationale: "Best for direct authority and fast proof.",
+                        script: "I tested this format and lifted retention.\\nComment your niche for the template.",
+                        script_text: "I tested this format and lifted retention.\\nComment your niche for the template.",
+                        structure: {
+                            hook: "I tested this format and lifted retention.",
+                            setup: "Here is how this works in 40 seconds.",
+                            value: "Use a concrete proof point before the first tip.",
+                            cta: "Comment your niche for the template.",
+                        },
+                        rank: 1,
+                        expected_lift_points: 3.2,
+                        score_breakdown: {
+                            platform_metrics: 81,
+                            competitor_metrics: 77,
+                            historical_metrics: 69,
+                            combined: 79,
+                            detector_weighted_score: 76,
+                            confidence: "medium",
+                        },
+                        detector_rankings: [],
+                        next_actions: [],
+                    },
+                    {
+                        id: "variant-2",
+                        style_key: "variant_b",
+                        label: "Curiosity Gap",
+                        rationale: "Best for curiosity-driven retention and completion.",
+                        script: "Most creators miss this hook signal.\\nStay to the end for the exact fix.",
+                        script_text: "Most creators miss this hook signal.\\nStay to the end for the exact fix.",
+                        structure: {
+                            hook: "Most creators miss this hook signal.",
+                            setup: "Stay to the end for the exact fix.",
+                            value: "Reveal the mistake and immediately show the fix.",
+                            cta: "Save this to use before your next post.",
+                        },
+                        rank: 2,
+                        expected_lift_points: 1.4,
+                        score_breakdown: {
+                            platform_metrics: 76,
+                            competitor_metrics: 75,
+                            historical_metrics: 69,
+                            combined: 76,
+                            detector_weighted_score: 72,
+                            confidence: "medium",
+                        },
+                        detector_rankings: [],
+                        next_actions: [],
+                    },
+                    {
+                        id: "variant-3",
+                        style_key: "variant_c",
+                        label: "Contrarian Take",
+                        rationale: "Best for differentiated positioning and share triggers.",
+                        script: "Stop copying viral edits blindly.\\nUse one strong payoff first.",
+                        script_text: "Stop copying viral edits blindly.\\nUse one strong payoff first.",
+                        structure: {
+                            hook: "Stop copying viral edits blindly.",
+                            setup: "Use one strong payoff first.",
+                            value: "Claim -> proof -> 2 steps beats over-edited intros.",
+                            cta: "Follow for part two and comment your niche.",
+                        },
+                        rank: 3,
+                        expected_lift_points: 0,
+                        score_breakdown: {
+                            platform_metrics: 71,
+                            competitor_metrics: 72,
+                            historical_metrics: 69,
+                            combined: 73,
+                            detector_weighted_score: 70,
+                            confidence: "low",
+                        },
+                        detector_rankings: [],
+                        next_actions: [],
+                    },
+                ],
+            });
+            return;
+        }
+
+        if (method === "POST" && path === "/optimizer/rescore") {
+            await json(200, {
+                score_breakdown: {
+                    platform_metrics: 84,
+                    competitor_metrics: 78,
+                    historical_metrics: 70,
+                    combined: 81,
+                    confidence: "medium",
+                    weights: {
+                        competitor_metrics: 0.55,
+                        platform_metrics: 0.45,
+                        historical_metrics: 0.0,
+                    },
+                    delta_from_baseline: 2,
+                },
+                detector_rankings: [],
+                next_actions: [
+                    {
+                        title: "Improve CTA Style",
+                        detector_key: "cta_style",
+                        priority: "high",
+                        why: "Detected CTA style: none.",
+                        expected_lift_points: 4.8,
+                        execution_steps: ["Add one concrete comment CTA in final 3 seconds."],
+                        evidence: ["Detected CTA style: none."],
+                    },
+                ],
+                line_level_edits: [
+                    {
+                        detector_key: "cta_style",
+                        detector_label: "CTA Style",
+                        priority: "high",
+                        line_number: 2,
+                        original_line: "Comment your niche for the template.",
+                        suggested_line: "Comment \"PLAN\" and I will post the full template.",
+                        reason: "Detected CTA style: none.",
+                    },
+                ],
+                improvement_diff: {
+                    combined: {
+                        before: 79,
+                        after: 81,
+                        delta: 2,
+                    },
+                    detectors: [
+                        {
+                            detector_key: "cta_style",
+                            before_score: 20,
+                            after_score: 68,
+                            delta: 48,
+                        },
+                    ],
+                },
+                signals: {
+                    detector_weighted_score: 78,
+                },
+                format_type: "short_form",
+                duration_seconds: 45,
+            });
+            return;
+        }
+
+        if (method === "POST" && path === "/optimizer/draft_snapshot") {
+            const payload = request.postDataJSON() as any;
+            const snapshot = {
+                id: `snapshot-${draftSnapshots.length + 1}`,
+                user_id: payload.user_id || "smoke-user",
+                platform: payload.platform || "youtube",
+                source_item_id: payload.source_item_id || null,
+                variant_id: payload.variant_id || null,
+                script_text: payload.script_text || "",
+                baseline_score: payload.baseline_score ?? null,
+                rescored_score: payload.rescored_score ?? payload.score_breakdown?.combined ?? 81,
+                delta_score: payload.delta_score ?? payload.score_breakdown?.delta_from_baseline ?? null,
+                detector_rankings: payload.detector_rankings || payload.rescore_output?.detector_rankings || [],
+                next_actions: payload.next_actions || payload.rescore_output?.next_actions || [],
+                line_level_edits: payload.line_level_edits || payload.rescore_output?.line_level_edits || [],
+                created_at: "2026-02-12T12:06:00Z",
+            };
+            draftSnapshots.unshift(snapshot);
+            await json(200, snapshot);
+            return;
+        }
+
         if (method === "POST" && path === "/audit/upload") {
             await json(200, {
                 upload_id: "upload-smoke-1",
@@ -443,6 +733,7 @@ test("connect -> competitors -> audit -> report smoke flow", async ({ page }) =>
     await expect(page).toHaveURL(new RegExp(`/report/${MOCK_AUDIT_ID}$`), { timeout: 20_000 });
     await expect(page.getByText(/82\/100/).first()).toBeVisible();
     await expect(page.getByRole("heading", { name: "Executive Recommendations" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Best Edited Variant" })).toBeVisible();
     await expect(page.getByText("Lead with a clearer value proposition in the first 5 seconds.")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Competitor Hook Intelligence" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Format-Aware Hook Rankings" })).toBeVisible();
@@ -470,4 +761,29 @@ test("upload -> score -> recommendations render smoke flow", async ({ page }) =>
     await expect(page.getByRole("heading", { name: "Before You Post: Top Edits" })).toBeVisible();
     await expect(page.getByText("Improve CTA Style")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Do This Next (Velocity Actions)" })).toBeVisible();
+});
+
+test("research -> variants -> rescore smoke flow", async ({ page }) => {
+    await installApiMocks(page);
+    await installLocalAuthState(page);
+
+    await page.goto("/research");
+    await expect(page.getByRole("heading", { name: "Research Studio" })).toBeVisible();
+    await expect(page.getByText("AI News Hook Breakdown")).toBeVisible();
+
+    await page.getByPlaceholder("Topic").fill("AI News hooks");
+    await page.getByRole("button", { name: "Generate 3 Variants" }).click();
+    await expect(page.getByText("#1 Outcome + Proof")).toBeVisible();
+    await expect(page.getByText("AI Generated").first()).toBeVisible();
+
+    await page.getByText("#1 Outcome + Proof").click();
+    await page.getByRole("button", { name: "Re-score Edited Draft" }).click();
+
+    await expect(page.getByText(/Combined: 81/)).toBeVisible();
+    await expect(page.getByText(/Improve CTA Style/)).toBeVisible();
+    await expect(page.getByText(/Line 2 \(CTA Style\)/)).toBeVisible();
+
+    await page.getByRole("button", { name: "Save Iteration" }).click();
+    await expect(page.getByText("Iteration History")).toBeVisible();
+    await expect(page.getByText(/Score 81/)).toBeVisible();
 });

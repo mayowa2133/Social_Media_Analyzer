@@ -361,6 +361,7 @@ export default function CompetitorsPage() {
                         <nav className="hidden items-center gap-4 text-sm text-[#6b6b6b] md:flex">
                             <Link href="/dashboard" className="hover:text-[#151515]">Dashboard</Link>
                             <Link href="/competitors" className="font-medium text-[#1b1b1b]">Competitors</Link>
+                            <Link href="/research" className="hover:text-[#151515]">Research</Link>
                             <Link href="/audit/new" className="hover:text-[#151515]">Audit Workspace</Link>
                         </nav>
                     </div>
@@ -426,6 +427,12 @@ export default function CompetitorsPage() {
                                     className="block rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-center text-sm font-medium text-[#2f2f2f] hover:bg-[#efefef]"
                                 >
                                     Run New Audit
+                                </Link>
+                                <Link
+                                    href="/research?mode=optimizer"
+                                    className="block rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-center text-sm font-medium text-[#2f2f2f] hover:bg-[#efefef]"
+                                >
+                                    Open Research Studio
                                 </Link>
                                 <Link
                                     href="/report/latest"
@@ -518,6 +525,12 @@ export default function CompetitorsPage() {
                                                         Top episodes: {series.top_titles.slice(0, 2).join(" | ")}
                                                     </p>
                                                 )}
+                                                <Link
+                                                    href={`/research?mode=optimizer&topic=${encodeURIComponent(series.recommended_angle || series.series_key)}&source_context=${encodeURIComponent(series.series_key)}`}
+                                                    className="mt-2 inline-flex rounded-lg border border-[#d9d9d9] bg-white px-2 py-1 text-[11px] text-[#555] hover:bg-[#efefef]"
+                                                >
+                                                    Send to Script Studio
+                                                </Link>
                                             </div>
                                         ))}
                                     </div>

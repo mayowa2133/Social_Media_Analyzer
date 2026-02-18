@@ -54,6 +54,7 @@ export default function ConnectPage() {
                         <nav className="hidden items-center gap-4 text-sm text-[#6b6b6b] md:flex">
                             <Link href="/dashboard" className="hover:text-[#151515]">Dashboard</Link>
                             <Link href="/competitors" className="hover:text-[#151515]">Competitors</Link>
+                            <Link href="/research" className="hover:text-[#151515]">Research</Link>
                             <Link href="/audit/new" className="hover:text-[#151515]">Audit Workspace</Link>
                             <Link href="/connect" className="font-medium text-[#1b1b1b]">Connect</Link>
                         </nav>

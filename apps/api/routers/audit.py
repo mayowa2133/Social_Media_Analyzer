@@ -22,6 +22,7 @@ from models.user import User
 from routers.auth_scope import AuthContext, ensure_user_scope, get_auth_context
 from routers.rate_limit import rate_limit
 from services.audit_queue import enqueue_audit_job
+from services.credits import add_credit_purchase, consume_credits
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -211,6 +212,14 @@ async def run_multimodal_audit(
             raise HTTPException(status_code=404, detail="Uploaded file is missing on disk")
 
     audit_id = str(uuid.uuid4())
+    credit_charge = await consume_credits(
+        scoped_user_id,
+        db,
+        cost=max(int(settings.CREDIT_COST_AUDIT_RUN), 0),
+        reason="Full upload audit + report",
+        reference_type="audit_run",
+        reference_id=audit_id,
+    )
 
     # Create Audit record
     db_audit = Audit(
@@ -248,12 +257,24 @@ async def run_multimodal_audit(
             await db.commit()
     except Exception as exc:
         logger.exception("Could not enqueue audit job %s: %s", audit_id, exc)
+        if int(credit_charge.get("charged", 0)) > 0:
+            try:
+                await add_credit_purchase(
+                    scoped_user_id,
+                    db,
+                    credits=int(credit_charge.get("charged", 0)),
+                    provider="system_refund",
+                    billing_reference=f"audit_enqueue_refund:{audit_id}",
+                    reason="Refund for failed audit queue enqueue",
+                )
+            except Exception:
+                logger.exception("Could not refund credits for failed audit %s", audit_id)
         db_audit.status = "failed"
         db_audit.error_message = "Could not enqueue audit job. Check Redis/worker availability."
         await db.commit()
         raise HTTPException(status_code=503, detail="Audit queue unavailable. Try again shortly.")
 
-    return {"audit_id": audit_id, "status": "pending"}
+    return {"audit_id": audit_id, "status": "pending", "credits": credit_charge}
 
 
 @router.get("/")

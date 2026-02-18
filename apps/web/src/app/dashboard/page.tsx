@@ -107,6 +107,7 @@ export default function DashboardPage() {
                         <nav className="hidden items-center gap-4 text-sm text-[#6b6b6b] md:flex">
                             <Link href="/dashboard" className="font-medium text-[#1b1b1b]">Dashboard</Link>
                             <Link href="/competitors" className="hover:text-[#151515]">Competitors</Link>
+                            <Link href="/research" className="hover:text-[#151515]">Research</Link>
                             <Link href="/audit/new" className="hover:text-[#151515]">Audit Workspace</Link>
                         </nav>
                     </div>
@@ -172,6 +173,9 @@ export default function DashboardPage() {
                             </Link>
                             <Link href="/audit/new" className="block rounded-xl border border-[#ddd] bg-white px-3 py-2 text-sm text-[#2b2b2b] hover:bg-[#f4f4f4]">
                                 Run New Audit
+                            </Link>
+                            <Link href="/research" className="block rounded-xl border border-[#ddd] bg-white px-3 py-2 text-sm text-[#2b2b2b] hover:bg-[#f4f4f4]">
+                                Open Research Studio
                             </Link>
                             <Link href="/report/latest" className="block rounded-xl border border-[#ddd] bg-white px-3 py-2 text-sm text-[#2b2b2b] hover:bg-[#f4f4f4]">
                                 View Latest Report

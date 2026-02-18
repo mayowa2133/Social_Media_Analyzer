@@ -53,6 +53,7 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                     <nav className="flex gap-5 text-sm text-[#666]">
                         <Link href="/dashboard" className="hover:text-[#1c1c1c]">Dashboard</Link>
                         <Link href="/competitors" className="hover:text-[#1c1c1c]">Competitors</Link>
+                        <Link href="/research" className="hover:text-[#1c1c1c]">Research</Link>
                         <Link href="/audit/new" className="hover:text-[#1c1c1c]">Audit Workspace</Link>
                     </nav>
                 </header>
@@ -65,6 +66,95 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                             createdAt={report.created_at}
                         />
                     </div>
+
+                    {report.calibration_confidence && (
+                        <section className="mb-8 rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                    <h2 className="text-lg font-bold text-[#1f1f1f]">Prediction Confidence</h2>
+                                    <p className="text-xs text-[#666]">
+                                        {report.calibration_confidence.platform} • Samples {report.calibration_confidence.sample_size} • MAE {report.calibration_confidence.mean_abs_error}
+                                    </p>
+                                </div>
+                                <span className="rounded-full border border-[#d9d9d9] bg-[#fafafa] px-3 py-1 text-xs uppercase tracking-wide text-[#555]">
+                                    {report.calibration_confidence.confidence}
+                                </span>
+                            </div>
+                            {!!report.calibration_confidence.recommendations?.length && (
+                                <ul className="mt-3 space-y-1 text-xs text-[#666]">
+                                    {report.calibration_confidence.recommendations.slice(0, 2).map((item, idx) => (
+                                        <li key={idx}>• {item}</li>
+                                    ))}
+                                </ul>
+                            )}
+                        </section>
+                    )}
+
+                    {(report.prediction_vs_actual || report.quick_actions?.length) && (
+                        <section className="mb-10 grid gap-4 md:grid-cols-2">
+                            {report.prediction_vs_actual && (
+                                <div className="rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                                    <h3 className="text-sm font-semibold text-[#222]">Predicted vs Actual</h3>
+                                    <p className="mt-2 text-xs text-[#666]">
+                                        Predicted: {Math.round(report.prediction_vs_actual.predicted_score || 0)} • Actual: {Math.round(report.prediction_vs_actual.actual_score || 0)}
+                                    </p>
+                                    {typeof report.prediction_vs_actual.calibration_delta === "number" && (
+                                        <p className="mt-1 text-xs text-[#666]">
+                                            Delta: {report.prediction_vs_actual.calibration_delta > 0 ? "+" : ""}
+                                            {report.prediction_vs_actual.calibration_delta}
+                                        </p>
+                                    )}
+                                    {report.prediction_vs_actual.posted_at && (
+                                        <p className="mt-1 text-[11px] text-[#777]">Posted at {new Date(report.prediction_vs_actual.posted_at).toLocaleString()}</p>
+                                    )}
+                                </div>
+                            )}
+                            {report.quick_actions?.length ? (
+                                <div className="rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                                    <h3 className="text-sm font-semibold text-[#222]">Next Step</h3>
+                                    {report.quick_actions.map((action) => (
+                                        <Link
+                                            key={action.type}
+                                            href={action.href}
+                                            className="mt-3 block rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-sm text-[#2f2f2f] hover:bg-[#efefef]"
+                                        >
+                                            {action.label}
+                                        </Link>
+                                    ))}
+                                </div>
+                            ) : null}
+                        </section>
+                    )}
+
+                    {report.best_edited_variant && (
+                        <section className="mb-10 rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                    <h2 className="text-lg font-bold text-[#1f1f1f]">Best Edited Variant</h2>
+                                    <p className="text-xs text-[#666]">
+                                        {report.best_edited_variant.platform} • Snapshot {report.best_edited_variant.id}
+                                    </p>
+                                </div>
+                                <span className="rounded-full border border-[#d9d9d9] bg-[#fafafa] px-3 py-1 text-xs text-[#555]">
+                                    {typeof report.best_edited_variant.delta_score === "number"
+                                        ? `${report.best_edited_variant.delta_score > 0 ? "+" : ""}${report.best_edited_variant.delta_score} pts`
+                                        : "No delta"}
+                                </span>
+                            </div>
+                            <p className="mt-3 rounded-xl border border-[#e1e1e1] bg-[#fafafa] p-3 text-xs text-[#444]">
+                                {report.best_edited_variant.script_preview}
+                            </p>
+                            {report.best_edited_variant.top_detector_improvements && report.best_edited_variant.top_detector_improvements.length > 0 && (
+                                <ul className="mt-3 space-y-1 text-xs text-[#666]">
+                                    {report.best_edited_variant.top_detector_improvements.map((item, idx) => (
+                                        <li key={`${item.detector_key}-${idx}`}>
+                                            • {item.label || item.detector_key}: {Math.round(item.score || 0)}/{Math.round(item.target_score || 0)}
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </section>
+                    )}
 
                     {hasCorePrediction && prediction && (
                         <section className="mb-16">

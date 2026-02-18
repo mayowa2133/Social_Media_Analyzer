@@ -13,6 +13,9 @@ from typing import Dict, Any, Optional, List
 from models.audit import Audit
 from models.blueprint_snapshot import BlueprintSnapshot
 from models.competitor import Competitor
+from models.outcome_metric import OutcomeMetric
+from models.calibration_snapshot import CalibrationSnapshot
+from models.draft_snapshot import DraftSnapshot
 from services.blueprint import generate_blueprint_service
 from config import settings
 
@@ -189,6 +192,168 @@ def _fallback_blueprint(reason: str = "") -> Dict[str, Any]:
     }
 
 
+def _confidence_bucket(sample_size: int, mean_abs_error: float) -> str:
+    if sample_size >= 20 and mean_abs_error <= 10:
+        return "high"
+    if sample_size >= 8 and mean_abs_error <= 16:
+        return "medium"
+    return "low"
+
+
+async def _prediction_outcome_context(user_id: str, db: AsyncSession) -> Dict[str, Any]:
+    latest_outcome_result = await db.execute(
+        select(OutcomeMetric)
+        .where(OutcomeMetric.user_id == user_id)
+        .order_by(OutcomeMetric.posted_at.desc(), OutcomeMetric.created_at.desc())
+        .limit(1)
+    )
+    latest_outcome = latest_outcome_result.scalar_one_or_none()
+
+    if latest_outcome:
+        prediction_vs_actual: Optional[Dict[str, Any]] = {
+            "outcome_id": latest_outcome.id,
+            "platform": latest_outcome.platform,
+            "content_item_id": latest_outcome.content_item_id,
+            "posted_at": latest_outcome.posted_at.isoformat() if latest_outcome.posted_at else None,
+            "predicted_score": latest_outcome.predicted_score,
+            "actual_score": latest_outcome.actual_score,
+            "calibration_delta": latest_outcome.calibration_delta,
+            "actual_metrics": (
+                latest_outcome.actual_metrics_json if isinstance(latest_outcome.actual_metrics_json, dict) else {}
+            ),
+        }
+        platform = latest_outcome.platform
+    else:
+        prediction_vs_actual = None
+        platform = "youtube"
+
+    snapshot_result = await db.execute(
+        select(CalibrationSnapshot)
+        .where(
+            CalibrationSnapshot.user_id == user_id,
+            CalibrationSnapshot.platform == platform,
+        )
+        .order_by(CalibrationSnapshot.updated_at.desc(), CalibrationSnapshot.created_at.desc())
+        .limit(1)
+    )
+    snapshot = snapshot_result.scalar_one_or_none()
+
+    if snapshot:
+        sample_size = int(snapshot.sample_size or 0)
+        mean_abs_error = float(snapshot.mean_abs_error or 0.0)
+        hit_rate = float(snapshot.hit_rate or 0.0)
+        confidence = _confidence_bucket(sample_size, mean_abs_error)
+        calibration_confidence = {
+            "platform": snapshot.platform,
+            "sample_size": sample_size,
+            "mean_abs_error": round(mean_abs_error, 2),
+            "hit_rate": round(hit_rate, 4),
+            "trend": snapshot.trend or "flat",
+            "confidence": confidence,
+            "insufficient_data": sample_size < 5,
+            "recommendations": snapshot.recommendations_json if isinstance(snapshot.recommendations_json, list) else [],
+        }
+    else:
+        calibration_confidence = {
+            "platform": platform,
+            "sample_size": 0,
+            "mean_abs_error": 0.0,
+            "hit_rate": 0.0,
+            "trend": "flat",
+            "confidence": "low",
+            "insufficient_data": True,
+            "recommendations": [
+                "No posted outcomes ingested yet. Add outcome metrics to calibrate prediction confidence.",
+            ],
+        }
+
+    return {
+        "prediction_vs_actual": prediction_vs_actual,
+        "calibration_confidence": calibration_confidence,
+    }
+
+
+async def _best_edited_variant_context(
+    *,
+    user_id: str,
+    audit_id: Optional[str],
+    db: AsyncSession,
+) -> Optional[Dict[str, Any]]:
+    linked_snapshot_id: Optional[str] = None
+    if audit_id:
+        linked_outcome_result = await db.execute(
+            select(OutcomeMetric)
+            .where(
+                OutcomeMetric.user_id == user_id,
+                OutcomeMetric.report_id == audit_id,
+                OutcomeMetric.draft_snapshot_id.isnot(None),
+            )
+            .order_by(OutcomeMetric.posted_at.desc(), OutcomeMetric.created_at.desc())
+            .limit(1)
+        )
+        linked_outcome = linked_outcome_result.scalar_one_or_none()
+        if linked_outcome and linked_outcome.draft_snapshot_id:
+            linked_snapshot_id = linked_outcome.draft_snapshot_id
+
+    snapshot = None
+    if linked_snapshot_id:
+        snapshot_result = await db.execute(
+            select(DraftSnapshot).where(
+                DraftSnapshot.id == linked_snapshot_id,
+                DraftSnapshot.user_id == user_id,
+            )
+        )
+        snapshot = snapshot_result.scalar_one_or_none()
+
+    if snapshot is None:
+        latest_snapshot_result = await db.execute(
+            select(DraftSnapshot)
+            .where(DraftSnapshot.user_id == user_id)
+            .order_by(DraftSnapshot.created_at.desc())
+            .limit(1)
+        )
+        snapshot = latest_snapshot_result.scalar_one_or_none()
+
+    if snapshot is None:
+        return None
+
+    script_preview = (snapshot.script_text or "").strip()
+    if len(script_preview) > 340:
+        script_preview = f"{script_preview[:337]}..."
+
+    detector_rankings = (
+        snapshot.detector_rankings_json
+        if isinstance(snapshot.detector_rankings_json, list)
+        else []
+    )
+    top_detectors: List[Dict[str, Any]] = []
+    for row in detector_rankings[:3]:
+        if not isinstance(row, dict):
+            continue
+        top_detectors.append(
+            {
+                "detector_key": row.get("detector_key"),
+                "label": row.get("label"),
+                "score": row.get("score"),
+                "target_score": row.get("target_score"),
+                "gap": row.get("gap"),
+            }
+        )
+
+    return {
+        "id": snapshot.id,
+        "platform": snapshot.platform,
+        "variant_id": snapshot.variant_id,
+        "source_item_id": snapshot.source_item_id,
+        "script_preview": script_preview,
+        "baseline_score": snapshot.baseline_score,
+        "rescored_score": snapshot.rescored_score,
+        "delta_score": snapshot.delta_score,
+        "created_at": snapshot.created_at.isoformat() if snapshot.created_at else None,
+        "top_detector_improvements": top_detectors,
+    }
+
+
 async def _compute_competitor_signature(user_id: str, db: AsyncSession) -> str:
     result = await db.execute(
         select(Competitor.external_id)
@@ -324,6 +489,12 @@ async def get_consolidated_report(user_id: str, audit_id: Optional[str], db: Asy
 
     # 3. Fetch Competitor Blueprint (Phase E)
     blueprint = await _get_or_refresh_blueprint(user_id, db)
+    outcome_context = await _prediction_outcome_context(user_id, db)
+    best_edited_variant = await _best_edited_variant_context(
+        user_id=user_id,
+        audit_id=audit.id if audit else audit_id,
+        db=db,
+    )
 
     # 4. Calculate Overall Score (Weighted)
     # Weights: 30% Stats Metrics, 40% Video Hook/Retention, 30% Strategy/Blueprint
@@ -345,5 +516,15 @@ async def get_consolidated_report(user_id: str, audit_id: Optional[str], db: Asy
         "video_analysis": video_analysis,
         "performance_prediction": performance_prediction,
         "blueprint": blueprint,
+        "prediction_vs_actual": outcome_context.get("prediction_vs_actual"),
+        "calibration_confidence": outcome_context.get("calibration_confidence"),
+        "best_edited_variant": best_edited_variant,
+        "quick_actions": [
+            {
+                "type": "generate_improved_variants",
+                "label": "Generate 3 improved variants now",
+                "href": "/research?mode=optimizer",
+            }
+        ],
         "recommendations": _normalize_recommendations(diagnosis, video_analysis, performance_prediction, blueprint),
     }

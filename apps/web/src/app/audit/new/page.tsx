@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
 import {
+    getResearchItem,
     getAuditStatus,
     getCurrentUserId,
     RetentionPoint,
@@ -53,6 +54,9 @@ export default function NewAuditPage() {
     const [running, setRunning] = useState(false);
     const [progressMessage, setProgressMessage] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [researchItemId, setResearchItemId] = useState("");
+    const [researchSourceSummary, setResearchSourceSummary] = useState<string | null>(null);
+    const [loadingResearchSource, setLoadingResearchSource] = useState(false);
 
     async function resolveUserId(): Promise<string | undefined> {
         const stored = getCurrentUserId();
@@ -74,6 +78,45 @@ export default function NewAuditPage() {
 
         return undefined;
     }
+
+    async function loadResearchSource(itemId: string) {
+        const normalized = itemId.trim();
+        if (!normalized) {
+            return;
+        }
+        setLoadingResearchSource(true);
+        setError(null);
+        try {
+            const item = await getResearchItem(normalized);
+            setResearchItemId(normalized);
+            setResearchSourceSummary(
+                item.title ||
+                    item.caption ||
+                    item.url ||
+                    `Imported ${item.platform} item`
+            );
+            if (item.url) {
+                setSourceMode("url");
+                setVideoUrl(item.url);
+            }
+        } catch (err: any) {
+            setError(err.message || "Could not load research item");
+        } finally {
+            setLoadingResearchSource(false);
+        }
+    }
+
+    useEffect(() => {
+        if (typeof window === "undefined") {
+            return;
+        }
+        const sourceItemId = new URLSearchParams(window.location.search).get("source_item_id");
+        if (sourceItemId) {
+            setResearchItemId(sourceItemId);
+            void loadResearchSource(sourceItemId);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     function updateRetentionRow(index: number, key: keyof RetentionRowInput, value: string) {
         setRetentionRows((prev) =>
@@ -263,6 +306,7 @@ export default function NewAuditPage() {
                             <nav className="hidden items-center gap-4 text-sm text-[#6b6b6b] md:flex">
                                 <Link href="/dashboard" className="hover:text-[#151515]">Dashboard</Link>
                                 <Link href="/competitors" className="hover:text-[#151515]">Competitors</Link>
+                                <Link href="/research" className="hover:text-[#151515]">Research</Link>
                                 <Link href="/audit/new" className="font-medium text-[#1b1b1b]">Audit Workspace</Link>
                             </nav>
                         </div>
@@ -333,6 +377,30 @@ export default function NewAuditPage() {
                                     <p className="text-[11px] text-[#7b7b7b]">Max 300MB • mp4, mov, m4v, webm, avi, mkv</p>
                                 </div>
                             )}
+
+                            <div className="mt-5 space-y-2 rounded-2xl border border-[#dfdfdf] bg-white p-3">
+                                <p className="text-xs font-semibold uppercase tracking-wide text-[#666]">Use Research Item</p>
+                                <div className="flex items-center gap-2">
+                                    <input
+                                        value={researchItemId}
+                                        onChange={(e) => setResearchItemId(e.target.value)}
+                                        placeholder="Research item id"
+                                        className="w-full rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-xs text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                        disabled={running || loadingResearchSource}
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => void loadResearchSource(researchItemId)}
+                                        disabled={running || loadingResearchSource || !researchItemId.trim()}
+                                        className="rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-xs text-[#444] hover:bg-[#efefef] disabled:opacity-50"
+                                    >
+                                        {loadingResearchSource ? "Loading..." : "Load"}
+                                    </button>
+                                </div>
+                                {researchSourceSummary && (
+                                    <p className="text-[11px] text-[#6d6d6d]">{researchSourceSummary}</p>
+                                )}
+                            </div>
 
                             <div className="mt-6 rounded-2xl border border-[#dfdfdf] bg-white p-3">
                                 <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#666]">Checklist</h3>

@@ -810,6 +810,49 @@ export interface ConsolidatedReport {
         }>;
     };
     blueprint: BlueprintResult;
+    prediction_vs_actual?: {
+        outcome_id: string;
+        platform: string;
+        content_item_id?: string | null;
+        posted_at?: string | null;
+        predicted_score?: number | null;
+        actual_score?: number | null;
+        calibration_delta?: number | null;
+        actual_metrics?: Record<string, any>;
+    } | null;
+    calibration_confidence?: {
+        platform: string;
+        sample_size: number;
+        mean_abs_error: number;
+        hit_rate: number;
+        trend: string;
+        confidence: "low" | "medium" | "high";
+        insufficient_data: boolean;
+        recommendations: string[];
+    };
+    best_edited_variant?: {
+        id: string;
+        platform: string;
+        variant_id?: string | null;
+        source_item_id?: string | null;
+        script_preview: string;
+        baseline_score?: number | null;
+        rescored_score?: number | null;
+        delta_score?: number | null;
+        created_at?: string | null;
+        top_detector_improvements?: Array<{
+            detector_key?: string;
+            label?: string;
+            score?: number;
+            target_score?: number;
+            gap?: number;
+        }>;
+    } | null;
+    quick_actions?: Array<{
+        type: string;
+        label: string;
+        href: string;
+    }>;
     recommendations: string[];
 }
 
@@ -819,6 +862,523 @@ export async function getConsolidatedReport(auditId?: string, userId?: string): 
         ? `/report/${auditId}?user_id=${safeEncode(qUserId)}`
         : `/report/latest?user_id=${safeEncode(qUserId)}`;
     return fetchApi(endpoint);
+}
+
+export interface ShareReportLinkResponse {
+    share_id: string;
+    audit_id: string;
+    share_token: string;
+    expires_at: string;
+    share_url: string;
+}
+
+export async function createReportShareLink(
+    auditId: string,
+    options: { userId?: string; expiresHours?: number } = {}
+): Promise<ShareReportLinkResponse> {
+    return fetchApi<ShareReportLinkResponse>(`/report/${auditId}/share`, {
+        method: "POST",
+        body: {
+            user_id: resolveUserId(options.userId),
+            expires_hours: options.expiresHours ?? 168,
+        },
+    });
+}
+
+export async function getSharedReport(shareToken: string): Promise<ConsolidatedReport> {
+    return fetchApi<ConsolidatedReport>(`/report/shared/${safeEncode(shareToken)}`);
+}
+
+// ==================== Research APIs ====================
+
+export interface ResearchItem {
+    item_id: string;
+    platform: "youtube" | "instagram" | "tiktok";
+    source_type: string;
+    url?: string | null;
+    external_id?: string | null;
+    creator_handle?: string | null;
+    creator_display_name?: string | null;
+    title?: string | null;
+    caption?: string | null;
+    metrics: {
+        views: number;
+        likes: number;
+        comments: number;
+        shares: number;
+        saves: number;
+    };
+    media_meta: Record<string, any>;
+    published_at?: string | null;
+    created_at?: string | null;
+    collection_id?: string | null;
+}
+
+export interface ResearchCollection {
+    id: string;
+    name: string;
+    platform?: string | null;
+    description?: string | null;
+    is_system: boolean;
+    created_at?: string | null;
+}
+
+export interface ResearchSearchResponse {
+    page: number;
+    limit: number;
+    total_count: number;
+    has_more: boolean;
+    items: ResearchItem[];
+    credits?: {
+        charged: number;
+        balance_after: number;
+    };
+}
+
+export async function importResearchUrl(
+    payload: {
+        platform?: "youtube" | "instagram" | "tiktok";
+        url: string;
+        userId?: string;
+    }
+): Promise<ResearchItem> {
+    return fetchApi<ResearchItem>("/research/import_url", {
+        method: "POST",
+        body: {
+            platform: payload.platform,
+            url: payload.url,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export async function captureResearchItem(
+    payload: Record<string, any> & { userId?: string }
+): Promise<ResearchItem> {
+    return fetchApi<ResearchItem>("/research/capture", {
+        method: "POST",
+        body: {
+            ...payload,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export async function importResearchCsv(
+    file: File,
+    payload: {
+        platform?: "youtube" | "instagram" | "tiktok";
+        userId?: string;
+    } = {}
+): Promise<{
+    imported_count: number;
+    failed_rows: Array<{ row: number; error: string }>;
+    collection_id: string;
+}> {
+    const formData = new FormData();
+    formData.append("file", file);
+    if (payload.platform) {
+        formData.append("platform", payload.platform);
+    }
+    formData.append("user_id", resolveUserId(payload.userId));
+    return fetchFormApi("/research/import_csv", formData);
+}
+
+export async function searchResearchItems(payload: {
+    platform?: "youtube" | "instagram" | "tiktok";
+    query?: string;
+    sort_by?: "created_at" | "posted_at" | "views" | "likes" | "comments" | "shares" | "saves";
+    sort_direction?: "asc" | "desc";
+    timeframe?: "24h" | "7d" | "30d" | "90d" | "all";
+    page?: number;
+    limit?: number;
+    userId?: string;
+}): Promise<ResearchSearchResponse> {
+    return fetchApi<ResearchSearchResponse>("/research/search", {
+        method: "POST",
+        body: {
+            platform: payload.platform,
+            query: payload.query || "",
+            sort_by: payload.sort_by || "created_at",
+            sort_direction: payload.sort_direction || "desc",
+            timeframe: payload.timeframe || "all",
+            page: payload.page || 1,
+            limit: payload.limit || 20,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export async function listResearchCollections(userId?: string): Promise<ResearchCollection[]> {
+    const qUserId = resolveUserId(userId);
+    const response = await fetchApi<{ collections: ResearchCollection[] }>(
+        `/research/collections?user_id=${safeEncode(qUserId)}`
+    );
+    return response.collections || [];
+}
+
+export async function getResearchItem(itemId: string, userId?: string): Promise<ResearchItem> {
+    const qUserId = resolveUserId(userId);
+    return fetchApi<ResearchItem>(`/research/items/${safeEncode(itemId)}?user_id=${safeEncode(qUserId)}`);
+}
+
+export async function exportResearchCollection(payload: {
+    collectionId: string;
+    format: "csv" | "json";
+    userId?: string;
+}): Promise<{
+    export_id: string;
+    status: string;
+    signed_url: string;
+    format: "csv" | "json";
+    item_count: number;
+}> {
+    return fetchApi("/research/export", {
+        method: "POST",
+        body: {
+            collection_id: payload.collectionId,
+            format: payload.format,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export function getApiBaseUrl(): string {
+    return API_BASE_URL;
+}
+
+// ==================== Optimizer APIs ====================
+
+export interface ScriptVariantResult {
+    id: string;
+    style_key: string;
+    label: string;
+    rationale: string;
+    script: string;
+    script_text: string;
+    structure: {
+        hook: string;
+        setup: string;
+        value: string;
+        cta: string;
+    };
+    rank: number;
+    expected_lift_points: number;
+    score_breakdown: {
+        platform_metrics: number;
+        competitor_metrics: number;
+        historical_metrics: number;
+        combined: number;
+        detector_weighted_score: number;
+        confidence: "low" | "medium" | "high";
+    };
+    detector_rankings: Array<{
+        detector_key: string;
+        label: string;
+        score: number;
+        target_score: number;
+        gap: number;
+        weight: number;
+        priority: "critical" | "high" | "medium" | "low";
+        rank: number;
+        estimated_lift_points: number;
+        evidence: string[];
+        edits: string[];
+    }>;
+    next_actions: Array<{
+        title: string;
+        detector_key: string;
+        priority: "critical" | "high" | "medium" | "low";
+        why: string;
+        expected_lift_points: number;
+        execution_steps: string[];
+        evidence: string[];
+    }>;
+}
+
+export interface VariantGenerationMeta {
+    mode: "ai_first_fallback";
+    provider: "openai" | "deterministic";
+    model: string;
+    used_fallback: boolean;
+    fallback_reason?: string | null;
+}
+
+export interface VariantGenerateResponse {
+    batch_id: string;
+    generated_at: string;
+    generation: VariantGenerationMeta;
+    variants: ScriptVariantResult[];
+    credits?: {
+        charged: number;
+        balance_after: number;
+    };
+}
+
+export interface OptimizerRescoreResponse {
+    score_breakdown: {
+        platform_metrics: number;
+        competitor_metrics: number;
+        historical_metrics: number;
+        combined: number;
+        confidence: "low" | "medium" | "high";
+        weights: Record<string, number>;
+        delta_from_baseline?: number | null;
+    };
+    detector_rankings: ScriptVariantResult["detector_rankings"];
+    next_actions: ScriptVariantResult["next_actions"];
+    line_level_edits: Array<{
+        detector_key: string;
+        detector_label: string;
+        priority: "critical" | "high" | "medium" | "low" | string;
+        line_number: number;
+        original_line: string;
+        suggested_line: string;
+        reason: string;
+    }>;
+    improvement_diff: {
+        combined: {
+            before?: number | null;
+            after: number;
+            delta?: number | null;
+        };
+        detectors: Array<{
+            detector_key: string;
+            before_score?: number | null;
+            after_score: number;
+            delta?: number | null;
+        }>;
+    };
+    signals: Record<string, any>;
+    format_type: "short_form" | "long_form" | "unknown";
+    duration_seconds: number;
+}
+
+export async function generateOptimizerVariants(payload: {
+    platform: "youtube" | "instagram" | "tiktok";
+    topic: string;
+    audience: string;
+    objective: string;
+    tone: string;
+    duration_s?: number;
+    template_series_key?: string;
+    source_item_id?: string;
+    source_context?: string;
+    generation_mode?: "ai_first_fallback";
+    constraints?: {
+        platform?: "youtube" | "instagram" | "tiktok";
+        duration_s?: number;
+        tone?: string;
+        hook_style?: string;
+        cta_style?: string;
+        pacing_density?: string;
+    };
+    userId?: string;
+}): Promise<VariantGenerateResponse> {
+    return fetchApi<VariantGenerateResponse>("/optimizer/variant_generate", {
+        method: "POST",
+        body: {
+            platform: payload.platform,
+            topic: payload.topic,
+            audience: payload.audience,
+            objective: payload.objective,
+            tone: payload.tone,
+            duration_s: payload.duration_s,
+            template_series_key: payload.template_series_key,
+            source_item_id: payload.source_item_id,
+            source_context: payload.source_context,
+            generation_mode: payload.generation_mode || "ai_first_fallback",
+            constraints: payload.constraints,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export async function rescoreOptimizerDraft(payload: {
+    platform: "youtube" | "instagram" | "tiktok";
+    script_text: string;
+    duration_s?: number;
+    optional_metrics?: Record<string, any>;
+    retention_points?: Array<{ time: number; retention: number }>;
+    baseline_score?: number;
+    baseline_detector_rankings?: ScriptVariantResult["detector_rankings"];
+    userId?: string;
+}): Promise<OptimizerRescoreResponse> {
+    return fetchApi<OptimizerRescoreResponse>("/optimizer/rescore", {
+        method: "POST",
+        body: {
+            platform: payload.platform,
+            script_text: payload.script_text,
+            duration_s: payload.duration_s,
+            optional_metrics: payload.optional_metrics,
+            retention_points: payload.retention_points,
+            baseline_score: payload.baseline_score,
+            baseline_detector_rankings: payload.baseline_detector_rankings,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export interface DraftSnapshot {
+    id: string;
+    user_id: string;
+    platform: "youtube" | "instagram" | "tiktok";
+    source_item_id?: string | null;
+    variant_id?: string | null;
+    script_text: string;
+    baseline_score?: number | null;
+    rescored_score: number;
+    delta_score?: number | null;
+    detector_rankings: ScriptVariantResult["detector_rankings"];
+    next_actions: ScriptVariantResult["next_actions"];
+    line_level_edits: OptimizerRescoreResponse["line_level_edits"];
+    created_at?: string | null;
+}
+
+export async function createDraftSnapshot(payload: {
+    platform: "youtube" | "instagram" | "tiktok";
+    source_item_id?: string;
+    variant_id?: string;
+    script_text: string;
+    baseline_score?: number;
+    rescored_score?: number;
+    delta_score?: number;
+    detector_rankings?: ScriptVariantResult["detector_rankings"];
+    next_actions?: ScriptVariantResult["next_actions"];
+    line_level_edits?: OptimizerRescoreResponse["line_level_edits"];
+    score_breakdown?: OptimizerRescoreResponse["score_breakdown"];
+    rescore_output?: OptimizerRescoreResponse;
+    userId?: string;
+}): Promise<DraftSnapshot> {
+    return fetchApi<DraftSnapshot>("/optimizer/draft_snapshot", {
+        method: "POST",
+        body: {
+            platform: payload.platform,
+            source_item_id: payload.source_item_id,
+            variant_id: payload.variant_id,
+            script_text: payload.script_text,
+            baseline_score: payload.baseline_score,
+            rescored_score: payload.rescored_score,
+            delta_score: payload.delta_score,
+            detector_rankings: payload.detector_rankings,
+            next_actions: payload.next_actions,
+            line_level_edits: payload.line_level_edits,
+            score_breakdown: payload.score_breakdown,
+            rescore_output: payload.rescore_output,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export async function getDraftSnapshot(snapshotId: string, userId?: string): Promise<DraftSnapshot> {
+    const qUserId = resolveUserId(userId);
+    return fetchApi<DraftSnapshot>(`/optimizer/draft_snapshot/${safeEncode(snapshotId)}?user_id=${safeEncode(qUserId)}`);
+}
+
+export async function listDraftSnapshots(payload: {
+    platform?: "youtube" | "instagram" | "tiktok";
+    limit?: number;
+    userId?: string;
+} = {}): Promise<{ items: DraftSnapshot[]; count: number }> {
+    const qUserId = resolveUserId(payload.userId);
+    const platformPart = payload.platform ? `&platform=${safeEncode(payload.platform)}` : "";
+    const limitPart = payload.limit ? `&limit=${payload.limit}` : "";
+    return fetchApi<{ items: DraftSnapshot[]; count: number }>(
+        `/optimizer/draft_snapshot?user_id=${safeEncode(qUserId)}${platformPart}${limitPart}`
+    );
+}
+
+// ==================== Outcomes APIs ====================
+
+export async function ingestOutcomeMetrics(payload: {
+    platform: "youtube" | "instagram" | "tiktok";
+    content_item_id?: string;
+    draft_snapshot_id?: string;
+    report_id?: string;
+    video_external_id?: string;
+    actual_metrics: Record<string, any>;
+    retention_points?: Array<{ time: number; retention: number }>;
+    posted_at: string;
+    predicted_score?: number;
+    userId?: string;
+}): Promise<{
+    outcome_id: string;
+    calibration_delta?: number | null;
+    actual_score: number;
+    predicted_score?: number | null;
+    confidence_update: Record<string, any>;
+}> {
+    return fetchApi("/outcomes/ingest", {
+        method: "POST",
+        body: {
+            platform: payload.platform,
+            content_item_id: payload.content_item_id,
+            draft_snapshot_id: payload.draft_snapshot_id,
+            report_id: payload.report_id,
+            video_external_id: payload.video_external_id,
+            actual_metrics: payload.actual_metrics,
+            retention_points: payload.retention_points,
+            posted_at: payload.posted_at,
+            predicted_score: payload.predicted_score,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export async function getOutcomesSummary(payload: {
+    platform?: "youtube" | "instagram" | "tiktok";
+    userId?: string;
+} = {}): Promise<Record<string, any>> {
+    const qUserId = resolveUserId(payload.userId);
+    const platformPart = payload.platform ? `&platform=${safeEncode(payload.platform)}` : "";
+    return fetchApi(`/outcomes/summary?user_id=${safeEncode(qUserId)}${platformPart}`);
+}
+
+// ==================== Billing APIs ====================
+
+export interface CreditSummaryResponse {
+    balance: number;
+    period_key: string;
+    free_monthly_credits: number;
+    costs: {
+        research_search: number;
+        optimizer_variants: number;
+        audit_run: number;
+    };
+    recent_entries: Array<{
+        id: string;
+        entry_type: string;
+        delta_credits: number;
+        balance_after: number;
+        reason?: string;
+        created_at?: string;
+    }>;
+}
+
+export async function getCreditSummary(userId?: string): Promise<CreditSummaryResponse> {
+    const qUserId = resolveUserId(userId);
+    return fetchApi<CreditSummaryResponse>(`/billing/credits?user_id=${safeEncode(qUserId)}`);
+}
+
+export async function topUpCredits(payload: { credits: number; billing_reference?: string; userId?: string }) {
+    return fetchApi("/billing/topup", {
+        method: "POST",
+        body: {
+            credits: payload.credits,
+            billing_reference: payload.billing_reference,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export async function createBillingCheckout(payload: { credits: number; userId?: string }) {
+    return fetchApi("/billing/checkout", {
+        method: "POST",
+        body: {
+            credits: payload.credits,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
 }
 
 // ==================== Health APIs ====================

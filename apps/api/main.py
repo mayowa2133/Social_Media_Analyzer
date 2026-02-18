@@ -11,7 +11,19 @@ import os
 from config import settings, validate_security_settings
 from database import engine, Base
 import models  # noqa: F401
-from routers import health, auth, youtube, analysis, audit, competitor, report
+from routers import (
+    health,
+    auth,
+    youtube,
+    analysis,
+    audit,
+    competitor,
+    report,
+    research,
+    optimizer,
+    outcomes,
+    billing,
+)
 from services.audit_queue import recover_stalled_audits
 
 
@@ -63,6 +75,10 @@ app.include_router(analysis.router, prefix="/analysis", tags=["Analysis"])
 app.include_router(audit.router, prefix="/audit", tags=["Audit"])
 app.include_router(competitor.router, prefix="/competitors", tags=["Competitor"])
 app.include_router(report.router, prefix="/report", tags=["Report"])
+app.include_router(research.router, prefix="/research", tags=["Research"])
+app.include_router(optimizer.router, prefix="/optimizer", tags=["Optimizer"])
+app.include_router(outcomes.router, prefix="/outcomes", tags=["Outcomes"])
+app.include_router(billing.router, prefix="/billing", tags=["Billing"])
 
 
 @app.get("/")

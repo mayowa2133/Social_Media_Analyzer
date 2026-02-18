@@ -35,6 +35,24 @@ Implemented:
   - combined metrics (with historical posted-video calibration when enough data is available).
 - Consolidated report contract and report pages (`/report/latest`, `/report/{audit_id}`).
 - Playwright smoke test flow in CI (`connect -> competitors -> audit -> report`).
+- Research parity foundation (YouTube + IG/TikTok metadata ingestion) with:
+  - URL import (`/research/import_url`)
+  - CSV import (`/research/import_csv`)
+  - browser-capture ingest (`/research/capture`)
+  - search/filter/sort/paginate/export (`/research/search`, `/research/export`).
+- Optimizer v2 loop:
+  - script variant batch generation (`/optimizer/variant_generate`)
+  - draft re-score with detector rankings and top edits (`/optimizer/rescore`).
+- Outcome learning loop:
+  - predicted-vs-actual ingest (`/outcomes/ingest`)
+  - calibration summary (`/outcomes/summary`).
+- Freemium credits foundation:
+  - monthly free grants + debit ledger
+  - balances and top-ups (`/billing/credits`, `/billing/topup`).
+- Shareable reports:
+  - create share links (`POST /report/{audit_id}/share`)
+  - open public share report (`GET /report/shared/{token}`).
+- Additional Playwright smoke flow (`research -> variants -> rescore`).
 
 Out of scope for this MVP:
 - Native TikTok and Instagram connectors (disabled).
@@ -50,7 +68,9 @@ Frontend (`apps/web`):
   - `/dashboard`
   - `/competitors`
   - `/audit/new`
+  - `/research`
   - `/report/[id]`
+  - `/report/shared/[token]`
 
 Backend (`apps/api`):
 - FastAPI routers:
@@ -60,6 +80,10 @@ Backend (`apps/api`):
   - `/competitors`
   - `/audit`
   - `/report`
+  - `/research`
+  - `/optimizer`
+  - `/outcomes`
+  - `/billing`
 - SQLAlchemy async models/tables:
   - `users`, `connections`, `profiles`
   - `competitors`, `videos`, `video_metrics`
