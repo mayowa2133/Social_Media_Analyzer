@@ -3,25 +3,35 @@ Authentication router for OAuth session sync and user profile retrieval.
 """
 
 from datetime import datetime, timezone
+import logging
 import uuid
 from typing import Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Path
+from pydantic import BaseModel, Field
 from sqlalchemy import desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
+from config import settings
 from database import get_db
 from ingestion.youtube import create_youtube_client_with_oauth
 from models.connection import Connection
 from models.profile import Profile
 from models.user import User
 from routers.auth_scope import AuthContext, get_auth_context
+from services.connectors import (
+    ConnectorCallbackPayload,
+    ConnectorUnavailableError,
+    connector_capabilities,
+    get_connector_provider,
+)
 from services.crypto import encrypt_token
+from services.identity import normalize_handle
 from services.session_token import create_session_token
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class SyncYouTubeSessionRequest(BaseModel):
@@ -61,8 +71,9 @@ class CurrentUserResponse(BaseModel):
     thumbnail_url: Optional[str] = None
     instagram_connected: bool = False
     tiktok_connected: bool = False
-    connected_platforms: Dict[str, bool] = {}
-    profiles: List[Dict[str, Optional[str]]] = []
+    connected_platforms: Dict[str, bool] = Field(default_factory=dict)
+    profiles: List[Dict[str, Optional[str]]] = Field(default_factory=list)
+    connector_capabilities: Dict[str, bool] = Field(default_factory=dict)
 
 
 class SyncSocialConnectionRequest(BaseModel):
@@ -92,10 +103,186 @@ class SyncSocialConnectionResponse(BaseModel):
     profile: Dict[str, Optional[str]]
 
 
+class ConnectPlatformStartResponse(BaseModel):
+    platform: Literal["instagram", "tiktok"]
+    oauth_available: bool
+    connect_url: Optional[str] = None
+    state: Optional[str] = None
+    provider: Optional[str] = None
+    setup_message: str
+    manual_fallback_supported: bool = True
+
+
+class ConnectPlatformCallbackRequest(BaseModel):
+    user_id: Optional[str] = None
+    email: Optional[str] = None
+    name: Optional[str] = None
+    picture: Optional[str] = None
+    code: str
+    state: str
+    redirect_uri: Optional[str] = None
+
+
 def _to_datetime(value: Optional[int]) -> Optional[datetime]:
     if not value:
         return None
     return datetime.fromtimestamp(value, tz=timezone.utc)
+
+
+async def _resolve_or_create_user(
+    *,
+    db: AsyncSession,
+    user_id: Optional[str],
+    email: str,
+    name: Optional[str],
+    picture: Optional[str],
+) -> User:
+    user: Optional[User] = None
+    if user_id:
+        user_result = await db.execute(select(User).where(User.id == user_id))
+        user = user_result.scalar_one_or_none()
+    if not user:
+        user_result = await db.execute(select(User).where(User.email == str(email)))
+        user = user_result.scalar_one_or_none()
+
+    if not user:
+        user = User(
+            id=user_id or str(uuid.uuid4()),
+            email=str(email),
+            name=name,
+            picture=picture,
+        )
+        db.add(user)
+        await db.flush()
+        return user
+
+    user.email = str(email)
+    if name:
+        user.name = name
+    if picture:
+        user.picture = picture
+    return user
+
+
+async def _upsert_social_connection(
+    *,
+    db: AsyncSession,
+    platform: Literal["instagram", "tiktok"],
+    handle: str,
+    email: str,
+    user_id: Optional[str] = None,
+    name: Optional[str] = None,
+    picture: Optional[str] = None,
+    external_id: Optional[str] = None,
+    display_name: Optional[str] = None,
+    follower_count: Optional[str] = None,
+    profile_picture_url: Optional[str] = None,
+    access_token: Optional[str] = None,
+    refresh_token: Optional[str] = None,
+    expires_at: Optional[int] = None,
+    scope: Optional[str] = None,
+    connection_method: Literal["manual", "oauth"] = "manual",
+    provider: Optional[str] = None,
+) -> SyncSocialConnectionResponse:
+    normalized_handle = normalize_handle(handle)
+    if not normalized_handle:
+        raise HTTPException(status_code=422, detail="handle is required")
+
+    user = await _resolve_or_create_user(
+        db=db,
+        user_id=user_id,
+        email=email,
+        name=name,
+        picture=picture,
+    )
+
+    connection_result = await db.execute(
+        select(Connection).where(
+            Connection.user_id == user.id,
+            Connection.platform == platform,
+        )
+    )
+    connection = connection_result.scalar_one_or_none()
+    opaque_access_token = str(access_token or f"{connection_method}:{platform}:{normalized_handle}")
+    encrypted_access = encrypt_token(opaque_access_token)
+    encrypted_refresh = encrypt_token(refresh_token) if refresh_token else None
+    platform_user_id = str(external_id or normalized_handle.lstrip("@")).strip()
+
+    if connection:
+        connection.platform_user_id = platform_user_id
+        connection.platform_handle = normalized_handle
+        connection.access_token_encrypted = encrypted_access
+        connection.refresh_token_encrypted = encrypted_refresh
+        connection.expires_at = _to_datetime(expires_at)
+        connection.scope = scope
+    else:
+        connection = Connection(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            platform=platform,
+            platform_user_id=platform_user_id,
+            platform_handle=normalized_handle,
+            access_token_encrypted=encrypted_access,
+            refresh_token_encrypted=encrypted_refresh,
+            expires_at=_to_datetime(expires_at),
+            scope=scope,
+        )
+        db.add(connection)
+
+    profile_result = await db.execute(
+        select(Profile).where(
+            Profile.user_id == user.id,
+            Profile.platform == platform,
+            Profile.external_id == platform_user_id,
+        )
+    )
+    profile = profile_result.scalar_one_or_none()
+    final_display_name = str(display_name or normalized_handle).strip()
+    subscriber_count = str(follower_count or "0")
+    if profile:
+        profile.handle = normalized_handle
+        profile.display_name = final_display_name
+        profile.profile_picture_url = profile_picture_url or profile.profile_picture_url
+        profile.subscriber_count = subscriber_count
+    else:
+        profile = Profile(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            platform=platform,
+            handle=normalized_handle,
+            external_id=platform_user_id,
+            display_name=final_display_name,
+            profile_picture_url=profile_picture_url,
+            subscriber_count=subscriber_count,
+        )
+        db.add(profile)
+
+    await db.commit()
+    await db.refresh(user)
+    session = create_session_token(user.id, user.email)
+    logger.info(
+        "social_connection_synced user=%s platform=%s method=%s provider=%s",
+        user.id,
+        platform,
+        connection_method,
+        provider or "manual_sync",
+    )
+    return SyncSocialConnectionResponse(
+        user_id=user.id,
+        email=user.email,
+        platform=platform,
+        connected=True,
+        session_token=session["token"],
+        session_expires_at=session["expires_at"],
+        profile={
+            "platform": platform,
+            "external_id": platform_user_id,
+            "handle": normalized_handle,
+            "display_name": final_display_name,
+            "subscriber_count": subscriber_count,
+            "profile_picture_url": profile_picture_url,
+        },
+    )
 
 
 @router.get("/me", response_model=CurrentUserResponse)
@@ -169,6 +356,7 @@ async def get_current_user(
         tiktok_connected=connected_platforms["tiktok"],
         connected_platforms=connected_platforms,
         profiles=profiles_payload,
+        connector_capabilities=connector_capabilities(),
     )
 
 
@@ -304,114 +492,113 @@ async def sync_social_connection(
 
     This supports manual parity workflows where OAuth provider integration is not available.
     """
-    handle = str(request.handle or "").strip()
-    if not handle:
-        raise HTTPException(status_code=422, detail="handle is required")
-    normalized_handle = handle if handle.startswith("@") else f"@{handle}"
-
-    user: Optional[User] = None
-    if request.user_id:
-        user_result = await db.execute(select(User).where(User.id == request.user_id))
-        user = user_result.scalar_one_or_none()
-    if not user:
-        user_result = await db.execute(select(User).where(User.email == str(request.email)))
-        user = user_result.scalar_one_or_none()
-
-    if not user:
-        user = User(
-            id=request.user_id or str(uuid.uuid4()),
-            email=str(request.email),
-            name=request.name,
-            picture=request.picture,
-        )
-        db.add(user)
-        await db.flush()
-    else:
-        user.email = str(request.email)
-        if request.name:
-            user.name = request.name
-        if request.picture:
-            user.picture = request.picture
-
-    connection_result = await db.execute(
-        select(Connection).where(
-            Connection.user_id == user.id,
-            Connection.platform == request.platform,
-        )
-    )
-    connection = connection_result.scalar_one_or_none()
-    opaque_access_token = str(request.access_token or f"manual:{request.platform}:{normalized_handle}")
-    encrypted_access = encrypt_token(opaque_access_token)
-    encrypted_refresh = encrypt_token(request.refresh_token) if request.refresh_token else None
-    platform_user_id = str(request.external_id or normalized_handle).strip()
-
-    if connection:
-        connection.platform_user_id = platform_user_id
-        connection.platform_handle = normalized_handle
-        connection.access_token_encrypted = encrypted_access
-        connection.refresh_token_encrypted = encrypted_refresh
-        connection.expires_at = _to_datetime(request.expires_at)
-        connection.scope = request.scope
-    else:
-        connection = Connection(
-            id=str(uuid.uuid4()),
-            user_id=user.id,
-            platform=request.platform,
-            platform_user_id=platform_user_id,
-            platform_handle=normalized_handle,
-            access_token_encrypted=encrypted_access,
-            refresh_token_encrypted=encrypted_refresh,
-            expires_at=_to_datetime(request.expires_at),
-            scope=request.scope,
-        )
-        db.add(connection)
-
-    profile_result = await db.execute(
-        select(Profile).where(
-            Profile.user_id == user.id,
-            Profile.platform == request.platform,
-            Profile.external_id == platform_user_id,
-        )
-    )
-    profile = profile_result.scalar_one_or_none()
-    display_name = str(request.display_name or normalized_handle).strip()
-    subscriber_count = str(request.follower_count or "0")
-    if profile:
-        profile.handle = normalized_handle
-        profile.display_name = display_name
-        profile.profile_picture_url = request.profile_picture_url or profile.profile_picture_url
-        profile.subscriber_count = subscriber_count
-    else:
-        profile = Profile(
-            id=str(uuid.uuid4()),
-            user_id=user.id,
-            platform=request.platform,
-            handle=normalized_handle,
-            external_id=platform_user_id,
-            display_name=display_name,
-            profile_picture_url=request.profile_picture_url,
-            subscriber_count=subscriber_count,
-        )
-        db.add(profile)
-
-    await db.commit()
-    await db.refresh(user)
-    session = create_session_token(user.id, user.email)
-    return SyncSocialConnectionResponse(
-        user_id=user.id,
-        email=user.email,
+    return await _upsert_social_connection(
+        db=db,
         platform=request.platform,
-        connected=True,
-        session_token=session["token"],
-        session_expires_at=session["expires_at"],
-        profile={
-            "platform": request.platform,
-            "external_id": platform_user_id,
-            "handle": normalized_handle,
-            "display_name": display_name,
-            "subscriber_count": subscriber_count,
-            "profile_picture_url": request.profile_picture_url,
-        },
+        handle=request.handle,
+        email=request.email,
+        user_id=request.user_id,
+        name=request.name,
+        picture=request.picture,
+        external_id=request.external_id,
+        display_name=request.display_name,
+        follower_count=request.follower_count,
+        profile_picture_url=request.profile_picture_url,
+        access_token=request.access_token,
+        refresh_token=request.refresh_token,
+        expires_at=request.expires_at,
+        scope=request.scope,
+        connection_method="manual",
+        provider="manual_sync",
+    )
+
+
+@router.post("/connect/{platform}/start", response_model=ConnectPlatformStartResponse)
+async def connect_platform_start(
+    platform: Literal["instagram", "tiktok"] = Path(...),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Start connector OAuth flow when enabled; otherwise return actionable fallback error."""
+    provider = get_connector_provider(platform)
+    try:
+        started = provider.start(user_id=auth.user_id)
+        logger.info("social_connection_start user=%s platform=%s method=oauth", auth.user_id, platform)
+        return ConnectPlatformStartResponse(
+            platform=platform,
+            oauth_available=True,
+            connect_url=started.connect_url,
+            state=started.state,
+            provider=started.provider,
+            setup_message=f"{platform.capitalize()} OAuth connector ready.",
+            manual_fallback_supported=True,
+        )
+    except ConnectorUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "platform": platform,
+                "message": str(exc),
+                "manual_sync_endpoint": "/auth/sync/social",
+                "required_flags": {
+                    "ENABLE_INSTAGRAM_CONNECTORS": bool(settings.ENABLE_INSTAGRAM_CONNECTORS),
+                    "ENABLE_TIKTOK_CONNECTORS": bool(settings.ENABLE_TIKTOK_CONNECTORS),
+                },
+            },
+        ) from exc
+
+
+@router.post("/connect/{platform}/callback", response_model=SyncSocialConnectionResponse)
+async def connect_platform_callback(
+    request: ConnectPlatformCallbackRequest,
+    platform: Literal["instagram", "tiktok"] = Path(...),
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Finalize OAuth callback into the same connection/profile contract as manual sync."""
+    if request.user_id and request.user_id != auth.user_id:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated session.")
+    provider = get_connector_provider(platform)
+    try:
+        oauth_profile = provider.callback(
+            ConnectorCallbackPayload(
+                platform=platform,
+                code=request.code,
+                state=request.state,
+                user_id=auth.user_id,
+                email=request.email or auth.email or f"{auth.user_id}@local.invalid",
+                name=request.name,
+                picture=request.picture,
+                redirect_uri=request.redirect_uri,
+            )
+        )
+    except ConnectorUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "platform": platform,
+                "message": str(exc),
+                "manual_sync_endpoint": "/auth/sync/social",
+            },
+        ) from exc
+
+    return await _upsert_social_connection(
+        db=db,
+        platform=platform,
+        handle=oauth_profile.handle,
+        email=request.email or auth.email or f"{auth.user_id}@local.invalid",
+        user_id=request.user_id or auth.user_id,
+        name=request.name,
+        picture=request.picture,
+        external_id=oauth_profile.platform_user_id,
+        display_name=oauth_profile.display_name,
+        follower_count=str(oauth_profile.follower_count),
+        profile_picture_url=oauth_profile.profile_picture_url,
+        access_token=oauth_profile.access_token,
+        refresh_token=oauth_profile.refresh_token,
+        expires_at=oauth_profile.expires_at,
+        scope=oauth_profile.scope,
+        connection_method="oauth",
+        provider=oauth_profile.provider,
     )
 
 

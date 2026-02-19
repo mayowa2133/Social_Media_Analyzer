@@ -18,6 +18,7 @@ from models.user import User
 from routers.auth_scope import AuthContext, ensure_user_scope, get_auth_context
 from routers.rate_limit import rate_limit
 from routers.youtube import _get_youtube_client, get_channel_videos
+from services.identity import identity_variants, normalize_handle, normalize_identity_token
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -88,6 +89,38 @@ class RecommendCompetitorsResponse(BaseModel):
     recommendations: List[RecommendedCompetitor]
 
 
+class DiscoverCompetitorsRequest(BaseModel):
+    platform: Literal["youtube", "instagram", "tiktok"] = "youtube"
+    query: str = ""
+    page: int = Field(default=1, ge=1)
+    limit: int = Field(default=12, ge=1, le=50)
+    user_id: Optional[str] = None
+
+
+class DiscoverCompetitorCandidate(BaseModel):
+    external_id: str
+    handle: str
+    display_name: str
+    subscriber_count: int = 0
+    video_count: int = 0
+    view_count: int = 0
+    avg_views_per_video: int = 0
+    thumbnail_url: Optional[str] = None
+    source: str
+    quality_score: float
+    already_tracked: bool = False
+
+
+class DiscoverCompetitorsResponse(BaseModel):
+    platform: str
+    query: str
+    page: int
+    limit: int
+    total_count: int
+    has_more: bool
+    candidates: List[DiscoverCompetitorCandidate]
+
+
 class SeriesInsightsRequest(BaseModel):
     user_id: Optional[str] = None
     platform: Literal["youtube", "instagram", "tiktok"] = "youtube"
@@ -149,6 +182,33 @@ class ViralScriptRequest(BaseModel):
     tone: Literal["bold", "expert", "conversational"] = "bold"
     template_series_key: Optional[str] = None
     desired_duration_s: Optional[int] = Field(default=None, ge=15, le=900)
+
+
+def _score_discovery_quality(
+    *,
+    subscriber_count: int,
+    video_count: int,
+    view_count: int,
+    avg_views_per_video: int,
+    source: str,
+) -> float:
+    # Keep deterministic and simple for stable pagination/ranking.
+    source_bonus = 12.0 if source in {"provider_search", "youtube_search"} else 7.0
+    return round(
+        source_bonus
+        + (min(subscriber_count, 2_000_000) / 80_000.0)
+        + (min(view_count, 100_000_000) / 2_000_000.0)
+        + (min(avg_views_per_video, 1_000_000) / 25_000.0)
+        + (min(video_count, 1000) / 80.0),
+        2,
+    )
+
+
+def _discover_key(*values: Any) -> str:
+    tokens = identity_variants(*values)
+    if not tokens:
+        return ""
+    return sorted(tokens, key=len, reverse=True)[0]
 
 
 # ==================== Endpoints ====================
@@ -234,12 +294,10 @@ async def add_manual_competitor(
 ):
     """Add a manual competitor handle for Instagram/TikTok/YouTube parity research."""
     scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
-    handle = request.handle.strip()
-    if not handle:
+    normalized_handle = normalize_handle(request.handle)
+    if not normalized_handle:
         raise HTTPException(status_code=422, detail="handle is required")
-
-    normalized_handle = handle if handle.startswith("@") else f"@{handle}"
-    external_id = (request.external_id or normalized_handle).strip()
+    external_id = normalize_identity_token(request.external_id) or normalized_handle.lstrip("@")
     display_name = (request.display_name or normalized_handle).strip()
 
     user_result = await db.execute(select(User).where(User.id == scoped_user_id))
@@ -303,7 +361,11 @@ async def import_competitors_from_research(
         )
     )
     existing_competitors = existing_result.scalars().all()
-    existing_ids = {str(row.external_id) for row in existing_competitors if row.external_id}
+    existing_ids = {
+        normalize_identity_token(row.external_id) or str(row.external_id)
+        for row in existing_competitors
+        if row.external_id
+    }
 
     items_result = await db.execute(
         select(ResearchItem).where(
@@ -327,12 +389,12 @@ async def import_competitors_from_research(
         if niche_text and niche_text not in text_blob:
             continue
         media_meta = item.media_meta_json if isinstance(item.media_meta_json, dict) else {}
-        creator_key = str(
-            item.creator_handle
-            or media_meta.get("creator_id")
-            or item.creator_display_name
-            or ""
-        ).strip()
+        creator_key = _discover_key(
+            item.creator_handle,
+            media_meta.get("creator_id"),
+            item.creator_display_name,
+            item.external_id,
+        )
         if not creator_key:
             continue
         metrics = item.metrics_json if isinstance(item.metrics_json, dict) else {}
@@ -341,9 +403,7 @@ async def import_competitors_from_research(
         comments = int(metrics.get("comments", 0) or 0)
         shares = int(metrics.get("shares", 0) or 0)
         saves = int(metrics.get("saves", 0) or 0)
-        normalized_handle = str(item.creator_handle or creator_key).strip()
-        if normalized_handle and not normalized_handle.startswith("@"):
-            normalized_handle = f"@{normalized_handle}"
+        normalized_handle = normalize_handle(item.creator_handle or creator_key)
         bucket = grouped.setdefault(
             creator_key,
             {
@@ -376,12 +436,11 @@ async def import_competitors_from_research(
         if int(row["items"]) < request.min_items_per_creator:
             skipped_low_volume += 1
             continue
-        external_id = str(row["external_id"])
+        external_id = normalize_identity_token(row["external_id"]) or str(row["external_id"])
         if external_id in existing_ids:
             skipped_existing += 1
             continue
-        handle = str(row["handle"] or external_id).strip()
-        normalized_handle = handle if handle.startswith("@") else f"@{handle}"
+        normalized_handle = normalize_handle(row["handle"] or external_id)
         comp = Competitor(
             id=str(uuid.uuid4()),
             user_id=scoped_user_id,
@@ -492,10 +551,17 @@ async def recommend_competitors(
                 ).lower()
                 if niche_lower not in text_blob:
                     continue
-                handle = str(item.creator_handle or item.creator_display_name or "").strip()
-                if not handle:
+                media_meta = item.media_meta_json if isinstance(item.media_meta_json, dict) else {}
+                dedupe_key = _discover_key(
+                    item.creator_handle,
+                    media_meta.get("creator_id"),
+                    item.creator_display_name,
+                    item.external_id,
+                )
+                if not dedupe_key:
                     continue
-                external_id = handle
+                normalized_handle = normalize_handle(item.creator_handle or dedupe_key)
+                external_id = dedupe_key
                 metrics = item.metrics_json if isinstance(item.metrics_json, dict) else {}
                 views = int(metrics.get("views", 0) or 0)
                 likes = int(metrics.get("likes", 0) or 0)
@@ -505,8 +571,8 @@ async def recommend_competitors(
                 row = grouped.setdefault(
                     external_id,
                     {
-                        "title": str(item.creator_display_name or handle),
-                        "custom_url": handle,
+                        "title": str(item.creator_display_name or normalized_handle),
+                        "custom_url": normalized_handle,
                         "subscriber_count": 0,
                         "video_count": 0,
                         "view_count": 0,
@@ -518,7 +584,6 @@ async def recommend_competitors(
                 row["video_count"] += 1
                 row["view_count"] += max(views, 0)
                 row["engagement_points"] += max(likes, 0) + (max(comments, 0) * 2) + (max(shares, 0) * 3) + (max(saves, 0) * 3)
-                media_meta = item.media_meta_json if isinstance(item.media_meta_json, dict) else {}
                 thumb = media_meta.get("thumbnail_url")
                 if thumb and not row["thumbnail_url"]:
                     row["thumbnail_url"] = thumb
@@ -621,6 +686,177 @@ async def recommend_competitors(
     except Exception:
         logger.exception("Failed to recommend competitors for user %s", auth.user_id)
         raise HTTPException(status_code=500, detail="Failed to recommend competitors.")
+
+
+@router.post("/discover", response_model=DiscoverCompetitorsResponse)
+async def discover_competitors(
+    request: DiscoverCompetitorsRequest,
+    _rate_limit: None = Depends(rate_limit("competitor_discover", limit=120, window_seconds=3600)),
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Hybrid-safe competitor discovery with deterministic ranking and identity dedupe."""
+    scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
+    query = str(request.query or "").strip()
+    query_lower = query.lower()
+    platform = request.platform
+
+    tracked_result = await db.execute(
+        select(Competitor).where(
+            Competitor.user_id == scoped_user_id,
+            Competitor.platform == platform,
+        )
+    )
+    tracked_rows = tracked_result.scalars().all()
+    tracked_tokens = set()
+    for row in tracked_rows:
+        tracked_tokens |= identity_variants(row.external_id, row.handle, row.display_name)
+
+    candidates_by_key: Dict[str, Dict[str, Any]] = {}
+
+    if platform == "youtube":
+        if not query:
+            raise HTTPException(status_code=422, detail="query is required for YouTube discover")
+        client = _get_youtube_client()
+        channels = client.search_channels(query, max_results=min(max(request.limit * 5, 20), 60))
+        for channel in channels:
+            external_id = str(channel.get("id") or "").strip()
+            if not external_id:
+                continue
+            key = _discover_key(external_id, channel.get("custom_url"), channel.get("title"))
+            if not key:
+                continue
+            subscriber_count = int(channel.get("subscriber_count", 0) or 0)
+            video_count = int(channel.get("video_count", 0) or 0)
+            view_count = int(channel.get("view_count", 0) or 0)
+            avg_views = int(view_count / max(video_count, 1))
+            handle = normalize_handle(channel.get("custom_url") or channel.get("title") or external_id)
+            quality = _score_discovery_quality(
+                subscriber_count=subscriber_count,
+                video_count=video_count,
+                view_count=view_count,
+                avg_views_per_video=avg_views,
+                source="youtube_search",
+            )
+            candidates_by_key[key] = {
+                "external_id": external_id,
+                "handle": handle,
+                "display_name": str(channel.get("title") or handle),
+                "subscriber_count": subscriber_count,
+                "video_count": video_count,
+                "view_count": view_count,
+                "avg_views_per_video": avg_views,
+                "thumbnail_url": channel.get("thumbnail_url"),
+                "source": "youtube_search",
+                "quality_score": quality,
+            }
+    else:
+        items_result = await db.execute(
+            select(ResearchItem)
+            .where(
+                ResearchItem.user_id == scoped_user_id,
+                ResearchItem.platform == platform,
+            )
+            .order_by(ResearchItem.published_at.desc(), ResearchItem.created_at.desc())
+        )
+        items = items_result.scalars().all()
+        for item in items:
+            text_blob = " ".join(
+                [
+                    str(item.title or ""),
+                    str(item.caption or ""),
+                    str(item.creator_handle or ""),
+                    str(item.creator_display_name or ""),
+                ]
+            ).lower()
+            if query_lower and query_lower not in text_blob:
+                continue
+
+            media_meta = item.media_meta_json if isinstance(item.media_meta_json, dict) else {}
+            key = _discover_key(
+                item.creator_handle,
+                media_meta.get("creator_id"),
+                item.creator_display_name,
+                item.external_id,
+            )
+            if not key:
+                continue
+            metrics = item.metrics_json if isinstance(item.metrics_json, dict) else {}
+            views = int(metrics.get("views", 0) or 0)
+            likes = int(metrics.get("likes", 0) or 0)
+            comments = int(metrics.get("comments", 0) or 0)
+            shares = int(metrics.get("shares", 0) or 0)
+            saves = int(metrics.get("saves", 0) or 0)
+            row = candidates_by_key.setdefault(
+                key,
+                {
+                    "external_id": key,
+                    "handle": normalize_handle(item.creator_handle or key),
+                    "display_name": str(item.creator_display_name or item.creator_handle or key),
+                    "subscriber_count": 0,
+                    "video_count": 0,
+                    "view_count": 0,
+                    "avg_views_per_video": 0,
+                    "thumbnail_url": None,
+                    "source": "research_corpus",
+                    "engagement_proxy": 0,
+                },
+            )
+            row["video_count"] += 1
+            row["view_count"] += max(views, 0)
+            row["engagement_proxy"] += max(likes, 0) + (max(comments, 0) * 2) + (max(shares, 0) * 3) + (max(saves, 0) * 3)
+            thumb = media_meta.get("thumbnail_url")
+            if thumb and not row["thumbnail_url"]:
+                row["thumbnail_url"] = thumb
+
+        for key, row in candidates_by_key.items():
+            video_count = max(int(row.get("video_count", 0)), 1)
+            avg_views = int(int(row.get("view_count", 0)) / video_count)
+            subscriber_proxy = int(row.get("engagement_proxy", 0) or 0)
+            row["avg_views_per_video"] = avg_views
+            row["subscriber_count"] = subscriber_proxy
+            row["quality_score"] = _score_discovery_quality(
+                subscriber_count=subscriber_proxy,
+                video_count=int(row.get("video_count", 0)),
+                view_count=int(row.get("view_count", 0)),
+                avg_views_per_video=avg_views,
+                source="research_corpus",
+            )
+
+    candidates: List[DiscoverCompetitorCandidate] = []
+    for key, row in candidates_by_key.items():
+        row_tokens = identity_variants(key, row.get("external_id"), row.get("handle"), row.get("display_name"))
+        already_tracked = bool(tracked_tokens.intersection(row_tokens))
+        candidates.append(
+            DiscoverCompetitorCandidate(
+                external_id=str(row.get("external_id") or key),
+                handle=str(row.get("handle") or f"@{key}"),
+                display_name=str(row.get("display_name") or row.get("handle") or key),
+                subscriber_count=int(row.get("subscriber_count", 0) or 0),
+                video_count=int(row.get("video_count", 0) or 0),
+                view_count=int(row.get("view_count", 0) or 0),
+                avg_views_per_video=int(row.get("avg_views_per_video", 0) or 0),
+                thumbnail_url=row.get("thumbnail_url"),
+                source=str(row.get("source") or "unknown"),
+                quality_score=float(row.get("quality_score", 0.0) or 0.0),
+                already_tracked=already_tracked,
+            )
+        )
+
+    candidates.sort(key=lambda item: item.display_name.lower())
+    candidates.sort(key=lambda item: item.quality_score, reverse=True)
+
+    start = (request.page - 1) * request.limit
+    end = start + request.limit
+    return DiscoverCompetitorsResponse(
+        platform=platform,
+        query=query,
+        page=request.page,
+        limit=request.limit,
+        total_count=len(candidates),
+        has_more=end < len(candidates),
+        candidates=candidates[start:end],
+    )
 
 
 @router.delete("/{competitor_id}")

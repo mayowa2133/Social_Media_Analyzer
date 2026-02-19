@@ -12,6 +12,7 @@ import {
     getCompetitors,
     getCurrentUserId,
     getCurrentUserProfile,
+    getOutcomesSummary,
     logoutBackendSession,
     syncYouTubeSession,
 } from "@/lib/api";
@@ -26,6 +27,7 @@ export default function DashboardPage() {
     const [loading, setLoading] = useState(true);
     const [syncing, setSyncing] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [platformConfidence, setPlatformConfidence] = useState<Record<string, string>>({});
 
     useEffect(() => {
         async function fetchData() {
@@ -68,6 +70,23 @@ export default function DashboardPage() {
                 } else {
                     setDiagnosis(null);
                 }
+
+                const connectedPlatforms = resolvedProfile?.connected_platforms;
+                const confidence: Record<string, string> = {};
+                if (connectedPlatforms) {
+                    const platformKeys = (["youtube", "instagram", "tiktok"] as const).filter((key) => connectedPlatforms[key]);
+                    await Promise.all(
+                        platformKeys.map(async (platform) => {
+                            try {
+                                const summary = await getOutcomesSummary({ platform, userId: resolvedUserId });
+                                confidence[platform] = String(summary?.confidence || "low");
+                            } catch {
+                                confidence[platform] = "n/a";
+                            }
+                        })
+                    );
+                }
+                setPlatformConfidence(confidence);
             } catch (err) {
                 console.error("Error fetching dashboard data:", err);
                 setError("Could not connect to API");
@@ -82,13 +101,18 @@ export default function DashboardPage() {
         }
     }, [status, session?.accessToken, session?.user?.email, session?.refreshToken, session?.expiresAt]);
 
-    const isConnected = !!profile?.youtube_connected;
+    const connectedPlatforms = profile?.connected_platforms || { youtube: false, instagram: false, tiktok: false };
+    const connectedCount = Object.values(connectedPlatforms).filter(Boolean).length;
+    const isConnected = connectedCount > 0;
 
     const statusLabel = status === "loading" || syncing
-        ? (syncing ? "Syncing YouTube connection..." : "Loading session...")
+        ? (syncing ? "Syncing channel connection..." : "Loading session...")
         : isConnected
-            ? `Connected to YouTube${profile?.channel_title ? `: ${profile.channel_title}` : ""}`
-            : "YouTube not connected yet";
+            ? `Connected platforms: ${Object.entries(connectedPlatforms)
+                .filter(([, value]) => value)
+                .map(([name]) => name)
+                .join(", ")}`
+            : "No platform connected yet";
 
     const statusTone = status === "loading" || syncing
         ? "bg-[#f0f0f0] border-[#dddddd] text-[#6b6b6b]"
@@ -130,7 +154,7 @@ export default function DashboardPage() {
                     <aside className="border-b border-[#dfdfdf] bg-[#f8f8f8] p-4 xl:border-b-0 xl:border-r">
                         <h1 className="text-xl font-bold text-[#202020]">Creator Dashboard</h1>
                         <p className="mt-1 text-sm text-[#6f6f6f]">
-                            Track channel health, competitor position, and audit momentum.
+                            Track cross-platform health, competitor position, and audit momentum.
                         </p>
 
                         <div className={`mt-4 rounded-2xl border px-3 py-2 text-sm ${statusTone}`}>
@@ -142,18 +166,27 @@ export default function DashboardPage() {
                                 href="/connect"
                                 className="mt-3 inline-flex text-sm font-medium text-[#5d4ea2] hover:text-[#3d2f84]"
                             >
-                                Connect YouTube →
+                                Connect Platforms →
                             </Link>
                         )}
 
                         <div className="mt-5 space-y-3">
                             <div className="rounded-2xl border border-[#dddddd] bg-white p-4">
-                                <p className="text-xs uppercase tracking-wide text-[#777]">Connected Channels</p>
-                                <p className="mt-1 text-3xl font-bold text-[#1f1f1f]">{isConnected ? 1 : 0}</p>
+                                <p className="text-xs uppercase tracking-wide text-[#777]">Connected Platforms</p>
+                                <p className="mt-1 text-3xl font-bold text-[#1f1f1f]">{connectedCount}</p>
+                                <p className="mt-1 text-[11px] text-[#777]">
+                                    YouTube {connectedPlatforms.youtube ? "Yes" : "No"} · Instagram {connectedPlatforms.instagram ? "Yes" : "No"} · TikTok {connectedPlatforms.tiktok ? "Yes" : "No"}
+                                </p>
                             </div>
                             <div className="rounded-2xl border border-[#dddddd] bg-white p-4">
                                 <p className="text-xs uppercase tracking-wide text-[#777]">Competitors Tracked</p>
                                 <p className="mt-1 text-3xl font-bold text-[#1f1f1f]">{competitors.length}</p>
+                            </div>
+                            <div className="rounded-2xl border border-[#dddddd] bg-white p-4">
+                                <p className="text-xs uppercase tracking-wide text-[#777]">Outcome Confidence</p>
+                                <p className="mt-1 text-sm text-[#1f1f1f]">
+                                    YT {platformConfidence.youtube || "n/a"} · IG {platformConfidence.instagram || "n/a"} · TT {platformConfidence.tiktok || "n/a"}
+                                </p>
                             </div>
                             <div className="rounded-2xl border border-[#dddddd] bg-white p-4">
                                 <p className="text-xs uppercase tracking-wide text-[#777]">Audits Completed</p>
@@ -208,7 +241,7 @@ export default function DashboardPage() {
                                             <div className="min-w-0">
                                                 <h3 className="truncate text-sm font-semibold text-[#232323]">{comp.title}</h3>
                                                 <p className="text-xs text-[#727272]">
-                                                    {Number(comp.subscriber_count || 0).toLocaleString()} subscribers
+                                                    {Number(comp.subscriber_count || 0).toLocaleString()} audience · {comp.platform}
                                                 </p>
                                             </div>
                                         </div>
@@ -222,11 +255,11 @@ export default function DashboardPage() {
                                 <div className="mb-4 text-5xl">📊</div>
                                 <h2 className="mb-2 text-2xl font-bold text-[#1f1f1f]">Get Started</h2>
                                 <p className="mx-auto mb-5 max-w-lg text-sm text-[#6d6d6d]">
-                                    Connect your YouTube channel and add competitors to unlock scoring benchmarks and strategy analysis.
+                                    Connect at least one platform and add competitors to unlock scoring benchmarks and strategy analysis.
                                 </p>
                                 <div className="flex flex-wrap justify-center gap-3">
                                     <Link href="/connect" className="rounded-xl bg-[#1d1d1d] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#101010]">
-                                        Connect YouTube
+                                        Connect Platforms
                                     </Link>
                                     <Link href="/competitors" className="rounded-xl border border-[#d9d9d9] bg-white px-5 py-2.5 text-sm font-semibold text-[#333] hover:bg-[#f7f7f7]">
                                         Add Competitors

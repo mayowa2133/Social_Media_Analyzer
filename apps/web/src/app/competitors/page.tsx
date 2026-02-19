@@ -11,6 +11,8 @@ import {
     CompetitorSuggestionSortBy,
     CompetitorSuggestionSortDirection,
     Competitor,
+    discoverCompetitors,
+    DiscoverCompetitorCandidate,
     getNextSeriesEpisode,
     generateSeriesPlan,
     generateViralScript,
@@ -72,6 +74,12 @@ export default function CompetitorsPage() {
     const [importingFromResearch, setImportingFromResearch] = useState(false);
     const [importNiche, setImportNiche] = useState("");
     const [importStatus, setImportStatus] = useState<string | null>(null);
+    const [discoverQuery, setDiscoverQuery] = useState("");
+    const [discovering, setDiscovering] = useState(false);
+    const [discoverError, setDiscoverError] = useState<string | null>(null);
+    const [discoveredCandidates, setDiscoveredCandidates] = useState<DiscoverCompetitorCandidate[]>([]);
+    const [selectedDiscoverIds, setSelectedDiscoverIds] = useState<string[]>([]);
+    const [importingDiscovered, setImportingDiscovered] = useState(false);
 
     const [seriesInsights, setSeriesInsights] = useState<SeriesIntelligence | null>(null);
     const [loadingSeries, setLoadingSeries] = useState(false);
@@ -319,6 +327,77 @@ export default function CompetitorsPage() {
         e.preventDefault();
         setSuggestionPage(1);
         await fetchSuggestedCompetitors(suggestionNiche, 1);
+    }
+
+    async function handleDiscoverCompetitorCandidates(e: React.FormEvent) {
+        e.preventDefault();
+        if (analysisPlatform === "youtube") {
+            setDiscoverError("Use niche suggestions for YouTube, or switch platform for hybrid discover.");
+            return;
+        }
+        setDiscovering(true);
+        setDiscoverError(null);
+        try {
+            const result = await discoverCompetitors({
+                platform: analysisPlatform,
+                query: discoverQuery.trim(),
+                page: 1,
+                limit: 20,
+            });
+            setDiscoveredCandidates(result.candidates);
+            setSelectedDiscoverIds([]);
+        } catch (err: any) {
+            setDiscoverError(err.message || "Failed to discover competitors.");
+            setDiscoveredCandidates([]);
+        } finally {
+            setDiscovering(false);
+        }
+    }
+
+    function toggleDiscoveredSelection(externalId: string) {
+        setSelectedDiscoverIds((prev) =>
+            prev.includes(externalId)
+                ? prev.filter((value) => value !== externalId)
+                : [...prev, externalId]
+        );
+    }
+
+    async function handleImportSelectedDiscovered() {
+        if (analysisPlatform === "youtube") {
+            return;
+        }
+        const selected = discoveredCandidates.filter((item) => selectedDiscoverIds.includes(item.external_id) && !item.already_tracked);
+        if (selected.length === 0) {
+            setDiscoverError("Select at least one untracked competitor.");
+            return;
+        }
+        setImportingDiscovered(true);
+        setDiscoverError(null);
+        try {
+            for (const candidate of selected) {
+                await addManualCompetitor({
+                    platform: analysisPlatform,
+                    handle: candidate.handle || candidate.external_id,
+                    display_name: candidate.display_name,
+                    external_id: candidate.external_id,
+                    subscriber_count: candidate.subscriber_count,
+                    thumbnail_url: candidate.thumbnail_url,
+                });
+            }
+            await fetchCompetitors();
+            setDiscoveredCandidates((prev) =>
+                prev.map((item) =>
+                    selectedDiscoverIds.includes(item.external_id)
+                        ? { ...item, already_tracked: true }
+                        : item
+                )
+            );
+            setSelectedDiscoverIds([]);
+        } catch (err: any) {
+            setDiscoverError(err.message || "Failed to import discovered competitors.");
+        } finally {
+            setImportingDiscovered(false);
+        }
     }
 
     async function handleSuggestionPageChange(nextPage: number) {
@@ -590,6 +669,68 @@ export default function CompetitorsPage() {
                                 </button>
                                 {importStatus && (
                                     <p className="mt-2 text-[11px] text-[#6d6d6d]">{importStatus}</p>
+                                )}
+                            </div>
+                        )}
+
+                        {analysisPlatform !== "youtube" && (
+                            <div className="mt-4 rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                                <h3 className="mb-2 text-sm font-semibold text-[#222]">Discover Competitors</h3>
+                                <p className="mb-3 text-xs text-[#6d6d6d]">
+                                    Hybrid-safe discover from your research corpus with deterministic quality ranking.
+                                </p>
+                                <form onSubmit={handleDiscoverCompetitorCandidates} className="space-y-2">
+                                    <input
+                                        type="text"
+                                        value={discoverQuery}
+                                        onChange={(e) => setDiscoverQuery(e.target.value)}
+                                        placeholder={`Find ${analysisPlatform} creators by niche (optional)`}
+                                        className="w-full rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-sm text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                        disabled={discovering || importingDiscovered}
+                                    />
+                                    <button
+                                        type="submit"
+                                        disabled={discovering || importingDiscovered}
+                                        className="w-full rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-sm font-medium text-[#2f2f2f] hover:bg-[#efefef] disabled:opacity-50"
+                                    >
+                                        {discovering ? "Discovering..." : "Discover Candidates"}
+                                    </button>
+                                </form>
+                                {discoverError && (
+                                    <p className="mt-2 text-[11px] text-[#7f3a3a]">{discoverError}</p>
+                                )}
+                                {discoveredCandidates.length > 0 && (
+                                    <div className="mt-3 space-y-2">
+                                        <div className="max-h-56 space-y-2 overflow-auto rounded-xl border border-[#e1e1e1] bg-[#fafafa] p-2">
+                                            {discoveredCandidates.map((candidate) => (
+                                                <label key={candidate.external_id} className="flex items-start gap-2 rounded-lg border border-[#e8e8e8] bg-white p-2">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={selectedDiscoverIds.includes(candidate.external_id)}
+                                                        onChange={() => toggleDiscoveredSelection(candidate.external_id)}
+                                                        disabled={candidate.already_tracked || importingDiscovered}
+                                                    />
+                                                    <div className="min-w-0">
+                                                        <p className="truncate text-xs font-semibold text-[#222]">
+                                                            {candidate.display_name}
+                                                            {candidate.already_tracked ? " (tracked)" : ""}
+                                                        </p>
+                                                        <p className="text-[11px] text-[#666]">
+                                                            {candidate.handle} · score {candidate.quality_score.toFixed(1)} · src {candidate.source}
+                                                        </p>
+                                                    </div>
+                                                </label>
+                                            ))}
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleImportSelectedDiscovered()}
+                                            disabled={importingDiscovered || selectedDiscoverIds.length === 0}
+                                            className="w-full rounded-xl bg-[#1f1f1f] px-3 py-2 text-sm font-semibold text-white hover:bg-[#111] disabled:opacity-50"
+                                        >
+                                            {importingDiscovered ? "Importing..." : `Import Selected (${selectedDiscoverIds.length})`}
+                                        </button>
+                                    </div>
                                 )}
                             </div>
                         )}

@@ -19,6 +19,7 @@ export default function ReportPage({ params }: { params: { id: string } }) {
     const [postingOutcome, setPostingOutcome] = useState(false);
     const [outcomeNotice, setOutcomeNotice] = useState<string | null>(null);
     const [outcomeError, setOutcomeError] = useState<string | null>(null);
+    const [allowPlatformMismatch, setAllowPlatformMismatch] = useState(false);
     const [recalibrating, setRecalibrating] = useState(false);
     const [outcomeForm, setOutcomeForm] = useState({
         platform: "youtube",
@@ -39,6 +40,17 @@ export default function ReportPage({ params }: { params: { id: string } }) {
             .finally(() => setLoading(false));
     }, [params.id]);
 
+    useEffect(() => {
+        if (!report?.report_platform) {
+            return;
+        }
+        setOutcomeForm((prev) => ({
+            ...prev,
+            platform: report.report_platform,
+        }));
+        setAllowPlatformMismatch(false);
+    }, [report?.report_platform]);
+
     if (loading) {
         return (
             <div className="flex min-h-screen items-center justify-center bg-[#e8e8e8]">
@@ -58,6 +70,8 @@ export default function ReportPage({ params }: { params: { id: string } }) {
     }
 
     const prediction = report.performance_prediction;
+    const reportPlatform = report.report_platform || "youtube";
+    const hasPlatformMismatch = outcomeForm.platform !== reportPlatform;
     const hasCorePrediction = !!(
         prediction &&
         prediction.competitor_metrics &&
@@ -73,6 +87,11 @@ export default function ReportPage({ params }: { params: { id: string } }) {
         setPostingOutcome(true);
         setOutcomeError(null);
         setOutcomeNotice(null);
+        if (hasPlatformMismatch && !allowPlatformMismatch) {
+            setOutcomeError(`Outcome platform (${outcomeForm.platform}) does not match report platform (${reportPlatform}). Confirm mismatch to continue.`);
+            setPostingOutcome(false);
+            return;
+        }
         try {
             const postedAt = outcomeForm.posted_at
                 ? new Date(outcomeForm.posted_at).toISOString()
@@ -136,6 +155,9 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                             auditId={report.audit_id}
                             createdAt={report.created_at}
                         />
+                        <p className="mt-2 text-center text-xs text-[#666]">
+                            Report platform: <span className="font-semibold text-[#2b2b2b]">{reportPlatform}</span>
+                        </p>
                     </div>
 
                     {report.calibration_confidence && (
@@ -212,7 +234,13 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                         <form onSubmit={handlePostOutcome} className="grid gap-2 md:grid-cols-4">
                             <select
                                 value={outcomeForm.platform}
-                                onChange={(e) => setOutcomeForm((prev) => ({ ...prev, platform: e.target.value }))}
+                                onChange={(e) => {
+                                    const platform = e.target.value;
+                                    setOutcomeForm((prev) => ({ ...prev, platform }));
+                                    if (platform === reportPlatform) {
+                                        setAllowPlatformMismatch(false);
+                                    }
+                                }}
                                 className="rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
                             >
                                 <option value="youtube">YouTube</option>
@@ -228,12 +256,24 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                             <input type="datetime-local" value={outcomeForm.posted_at} onChange={(e) => setOutcomeForm((p) => ({ ...p, posted_at: e.target.value }))} className="rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222]" />
                             <button
                                 type="submit"
-                                disabled={postingOutcome}
+                                disabled={postingOutcome || (hasPlatformMismatch && !allowPlatformMismatch)}
                                 className="rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-xs text-[#2f2f2f] hover:bg-[#efefef] disabled:opacity-50"
                             >
                                 {postingOutcome ? "Saving..." : "Save Post Result"}
                             </button>
                         </form>
+                        {hasPlatformMismatch && (
+                            <div className="mt-2 rounded-xl border border-[#ecd9bc] bg-[#fff8ed] px-3 py-2 text-[11px] text-[#735534]">
+                                Platform mismatch detected (report: {reportPlatform}, selected: {outcomeForm.platform}).
+                                <button
+                                    type="button"
+                                    onClick={() => setAllowPlatformMismatch(true)}
+                                    className="ml-2 rounded-md border border-[#d9c7ab] bg-white px-2 py-0.5 text-[11px] text-[#6f5131] hover:bg-[#f5ede1]"
+                                >
+                                    Allow mismatch
+                                </button>
+                            </div>
+                        )}
                         {outcomeNotice && <p className="mt-2 text-xs text-[#2f6b39]">{outcomeNotice}</p>}
                         {outcomeError && <p className="mt-2 text-xs text-[#7f3a3a]">{outcomeError}</p>}
                     </section>

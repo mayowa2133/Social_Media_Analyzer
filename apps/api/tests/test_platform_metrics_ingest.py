@@ -97,6 +97,14 @@ xyz789,https://www.youtube.com/watch?v=xyz789,Video B,98000,4100,290,190,520,22.
     assert payload["processed_rows"] == 2
     assert payload["successful_rows"] == 2
     assert payload["failed_rows"] == 0
+    assert payload["normalized_fields"]["views"] == "mapped"
+    assert payload["normalized_fields"]["likes"] == "mapped"
+    assert payload["normalized_fields"]["comments"] == "mapped"
+    assert payload["normalized_fields"]["shares"] == "mapped"
+    assert payload["normalized_fields"]["saves"] == "mapped"
+    assert payload["normalized_fields"]["retention_points"] == "mapped"
+    assert payload["normalized_fields"]["avg_view_duration_s"] == "mapped"
+    assert payload["normalized_fields"]["ctr"] == "mapped"
 
     async with session_maker() as db:
         result = await db.execute(select(VideoMetrics))

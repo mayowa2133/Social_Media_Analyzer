@@ -20,6 +20,7 @@ from models.competitor import Competitor
 from models.connection import Connection
 from models.profile import Profile
 from models.research_item import ResearchItem
+from services.identity import identity_variants, normalize_identity_token
 
 logger = logging.getLogger(__name__)
 
@@ -122,23 +123,11 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 
 def _normalize_creator_token(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    if text.startswith("@"):
-        text = text[1:]
-    return text
+    return normalize_identity_token(value)
 
 
 def _identity_tokens(*values: Any) -> set[str]:
-    tokens: set[str] = set()
-    for value in values:
-        normalized = _normalize_creator_token(value)
-        if not normalized:
-            continue
-        tokens.add(normalized)
-        condensed = re.sub(r"[^a-z0-9]+", "", normalized)
-        if condensed:
-            tokens.add(condensed)
-    return tokens
+    return identity_variants(*values)
 
 
 def _resolve_blueprint_platform(platform: Any) -> str:
@@ -883,6 +872,46 @@ def _build_velocity_actions(
     )
 
     return actions[:3]
+
+
+def _data_quality_tier(
+    *,
+    mapped_competitor_items: int,
+    transcript_quality: Dict[str, Any],
+    winner_pattern_signals: Dict[str, Any],
+) -> str:
+    coverage = float(transcript_quality.get("transcript_coverage_ratio", 0.0) or 0.0)
+    top_topics = winner_pattern_signals.get("top_topics_by_velocity", [])
+    top_videos = winner_pattern_signals.get("top_videos_by_velocity", [])
+    velocity_values: List[float] = []
+    if isinstance(top_videos, list):
+        for row in top_videos:
+            if not isinstance(row, dict):
+                continue
+            velocity_values.append(float(row.get("views_per_day", 0.0) or 0.0))
+    velocity_values = [val for val in velocity_values if val > 0]
+    velocity_spread = 0.0
+    if velocity_values:
+        min_val = min(velocity_values)
+        max_val = max(velocity_values)
+        velocity_spread = (max_val - min_val) / max(min_val, 1.0)
+
+    if (
+        mapped_competitor_items >= 24
+        and coverage >= 0.55
+        and isinstance(top_topics, list)
+        and len(top_topics) >= 3
+        and len(velocity_values) >= 5
+        and velocity_spread >= 0.2
+    ):
+        return "high"
+    if (
+        mapped_competitor_items >= 10
+        and coverage >= 0.3
+        and len(velocity_values) >= 3
+    ):
+        return "medium"
+    return "low"
 
 
 def _detect_hook_pattern(title: str) -> str:
@@ -2155,6 +2184,7 @@ async def generate_blueprint_service(
     resolved_platform = _resolve_blueprint_platform(platform)
     user_channel_name = "User Channel"
     user_channel_id: Optional[str] = None
+    scanned_count = 0
 
     result = await db.execute(
         select(Competitor).where(
@@ -2184,6 +2214,13 @@ async def generate_blueprint_service(
             "transcript_quality": _build_transcript_quality([]),
             "velocity_actions": [],
             "series_intelligence": empty_series,
+            "dataset_summary": {
+                "platform": resolved_platform,
+                "research_items_scanned": 0,
+                "mapped_competitor_items": 0,
+                "mapped_user_items": 0,
+                "data_quality_tier": "low",
+            },
         }
     all_videos: List[Dict[str, Any]] = []
     if resolved_platform == "youtube":
@@ -2326,6 +2363,7 @@ async def generate_blueprint_service(
                     "research_items_scanned": scanned_count,
                     "mapped_competitor_items": 0,
                     "mapped_user_items": len(user_rows),
+                    "data_quality_tier": "low",
                 },
             }
 
@@ -2343,6 +2381,11 @@ async def generate_blueprint_service(
         competitor_framework=framework_playbook,
         user_framework=user_framework_playbook,
         hook_intelligence=hook_intelligence,
+    )
+    data_quality_tier = _data_quality_tier(
+        mapped_competitor_items=len(competitor_videos),
+        transcript_quality=transcript_quality,
+        winner_pattern_signals=winner_pattern_signals,
     )
     logger.info(
         "Blueprint transcript coverage user=%s sample=%s coverage=%s by_source=%s",
@@ -2392,8 +2435,10 @@ async def generate_blueprint_service(
         "series_intelligence": series_intelligence,
         "dataset_summary": {
             "platform": resolved_platform,
+            "research_items_scanned": scanned_count,
             "mapped_competitor_items": len(competitor_videos),
             "mapped_user_items": len(user_videos),
+            "data_quality_tier": data_quality_tier,
         },
     }
 

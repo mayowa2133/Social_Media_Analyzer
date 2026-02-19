@@ -6,6 +6,8 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
     clearStoredAuthSession,
+    connectSocialPlatformCallback,
+    connectSocialPlatformStart,
     CurrentUserResponse,
     getCurrentUserProfile,
     ingestPlatformMetricsCsv,
@@ -23,6 +25,7 @@ export default function ConnectPage() {
     const [socialDisplayName, setSocialDisplayName] = useState("");
     const [socialFollowers, setSocialFollowers] = useState("");
     const [connectingSocial, setConnectingSocial] = useState(false);
+    const [connectingSocialOauth, setConnectingSocialOauth] = useState<"instagram" | "tiktok" | null>(null);
     const [socialMessage, setSocialMessage] = useState<string | null>(null);
     const [metricsPlatform, setMetricsPlatform] = useState<"youtube" | "instagram" | "tiktok">("instagram");
     const [metricsCsvFile, setMetricsCsvFile] = useState<File | null>(null);
@@ -100,6 +103,33 @@ export default function ConnectPage() {
         }
     }
 
+    async function handleConnectSocialOAuth(platform: "instagram" | "tiktok") {
+        const derivedEmail = socialEmail.trim() || session?.user?.email || "";
+        if (!derivedEmail) {
+            setSocialMessage("Email is required to complete connector setup.");
+            return;
+        }
+        setConnectingSocialOauth(platform);
+        setSocialMessage(null);
+        try {
+            const start = await connectSocialPlatformStart(platform);
+            const response = await connectSocialPlatformCallback(platform, {
+                code: "stub_code",
+                state: start.state || "stub_state",
+                email: derivedEmail,
+                name: session?.user?.name || undefined,
+                picture: session?.user?.image || undefined,
+            });
+            const refreshed = await getCurrentUserProfile();
+            setProfile(refreshed);
+            setSocialMessage(`Connected ${response.platform} via OAuth as ${response.profile.handle || "creator"}.`);
+        } catch (err: any) {
+            setSocialMessage(err.message || "Could not start OAuth connection.");
+        } finally {
+            setConnectingSocialOauth(null);
+        }
+    }
+
     async function handleImportMetricsCsv(e: React.FormEvent) {
         e.preventDefault();
         if (!metricsCsvFile) {
@@ -110,12 +140,13 @@ export default function ConnectPage() {
         setMetricsMessage(null);
         try {
             const response = await ingestPlatformMetricsCsv(metricsCsvFile, { platform: metricsPlatform });
+            const mappedCount = Object.values(response.normalized_fields || {}).filter((value) => value === "mapped").length;
             setMetricsMessage(
-                `Imported ${response.successful_rows}/${response.processed_rows} rows for ${metricsPlatform}.`
+                `Imported ${response.successful_rows}/${response.processed_rows} rows for ${metricsPlatform} (${mappedCount}/8 mapped fields).`
             );
             if (response.failed_rows > 0) {
                 setMetricsMessage(
-                    `Imported ${response.successful_rows}/${response.processed_rows} rows for ${metricsPlatform} (${response.failed_rows} failed).`
+                    `Imported ${response.successful_rows}/${response.processed_rows} rows for ${metricsPlatform} (${response.failed_rows} failed, ${mappedCount}/8 mapped fields).`
                 );
             }
         } catch (err: any) {
@@ -226,8 +257,32 @@ export default function ConnectPage() {
                                             <div className="mb-2 flex items-center justify-between gap-2">
                                                 <h2 className="text-sm font-semibold text-[#222]">Instagram / TikTok</h2>
                                                 <span className="rounded-lg border border-[#dbdbdb] bg-white px-2 py-1 text-[11px] text-[#6f6f6f]">
-                                                    Manual Connect
+                                                    Hybrid Safe Connect
                                                 </span>
+                                            </div>
+                                            <div className="mb-3 rounded-xl border border-[#e3e3e3] bg-white p-3">
+                                                <p className="text-[11px] text-[#666]">
+                                                    OAuth availability: Instagram {profile?.connector_capabilities?.instagram_oauth_available ? "enabled" : "disabled"} · TikTok {profile?.connector_capabilities?.tiktok_oauth_available ? "enabled" : "disabled"}
+                                                </p>
+                                                <div className="mt-2 flex flex-wrap gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => void handleConnectSocialOAuth("instagram")}
+                                                        disabled={!profile?.connector_capabilities?.instagram_oauth_available || connectingSocialOauth !== null}
+                                                        className="rounded-lg border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-1.5 text-xs text-[#444] hover:bg-[#efefef] disabled:opacity-50"
+                                                    >
+                                                        {connectingSocialOauth === "instagram" ? "Connecting..." : "Connect Instagram OAuth"}
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => void handleConnectSocialOAuth("tiktok")}
+                                                        disabled={!profile?.connector_capabilities?.tiktok_oauth_available || connectingSocialOauth !== null}
+                                                        className="rounded-lg border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-1.5 text-xs text-[#444] hover:bg-[#efefef] disabled:opacity-50"
+                                                    >
+                                                        {connectingSocialOauth === "tiktok" ? "Connecting..." : "Connect TikTok OAuth"}
+                                                    </button>
+                                                </div>
+                                                <p className="mt-2 text-[11px] text-[#777]">If OAuth is disabled, manual sync below remains fully supported.</p>
                                             </div>
                                             <div className="grid gap-2 md:grid-cols-2">
                                                 <select

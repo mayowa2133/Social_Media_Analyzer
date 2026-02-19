@@ -122,6 +122,8 @@ async def test_report_contract_preserves_new_prediction_fields(report_db):
     assert "calibration_confidence" in report
     assert isinstance(report["calibration_confidence"], dict)
     assert report["calibration_confidence"]["platform"] == "instagram"
+    assert report["report_platform"] == "instagram"
+    assert report["report_platform"] == report["calibration_confidence"]["platform"]
     assert "prediction_vs_actual" in report
     assert "quick_actions" in report
     assert "best_edited_variant" in report

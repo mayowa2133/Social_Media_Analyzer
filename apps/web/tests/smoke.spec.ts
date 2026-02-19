@@ -2,10 +2,15 @@ import { expect, Page, test } from "@playwright/test";
 
 const MOCK_AUDIT_ID = "audit-smoke-123";
 const MOCK_UPLOAD_AUDIT_ID = "audit-upload-456";
+const MOCK_IG_AUDIT_ID = "audit-ig-789";
 
-function buildMockReport(auditId: string) {
+function buildMockReport(
+    auditId: string,
+    reportPlatform: "youtube" | "instagram" | "tiktok" = "youtube"
+) {
     return {
         audit_id: auditId,
+        report_platform: reportPlatform,
         created_at: "2026-02-12T12:05:00Z",
         overall_score: 82,
         diagnosis: {
@@ -16,6 +21,7 @@ function buildMockReport(auditId: string) {
             metrics: {},
         },
         performance_prediction: {
+            platform: reportPlatform,
             format_type: "short_form",
             duration_seconds: 42,
             competitor_metrics: {
@@ -266,7 +272,7 @@ function buildMockReport(auditId: string) {
         },
         best_edited_variant: {
             id: "snapshot-report-1",
-            platform: "youtube",
+            platform: reportPlatform,
             variant_id: "variant-1",
             source_item_id: "research-1",
             script_preview: "I tested this format and lifted retention. Comment your niche for the template.",
@@ -288,11 +294,23 @@ function buildMockReport(auditId: string) {
             "Lead with a clearer value proposition in the first 5 seconds.",
             "Increase pattern interrupts every 20 seconds.",
         ],
+        calibration_confidence: {
+            platform: reportPlatform,
+            sample_size: 6,
+            mean_abs_error: 11.2,
+            hit_rate: 0.58,
+            trend: "flat",
+            confidence: "medium",
+            insufficient_data: false,
+            recommendations: ["Keep ingesting outcomes for tighter confidence."],
+        },
+        prediction_vs_actual: null,
     };
 }
 
 async function installApiMocks(page: Page) {
-    let competitorCount = 0;
+    const competitors: Array<any> = [];
+    const connectedPlatforms = { youtube: false, instagram: false, tiktok: false };
     const pollCountByAudit: Record<string, number> = {};
     const draftSnapshots: any[] = [];
 
@@ -310,27 +328,55 @@ async function installApiMocks(page: Page) {
             });
         };
 
+        if (method === "GET" && path === "/auth/me") {
+            await json(200, {
+                user_id: "smoke-user",
+                email: "smoke@example.com",
+                youtube_connected: connectedPlatforms.youtube,
+                instagram_connected: connectedPlatforms.instagram,
+                tiktok_connected: connectedPlatforms.tiktok,
+                connected_platforms: connectedPlatforms,
+                profiles: [],
+                connector_capabilities: {
+                    instagram_oauth_available: false,
+                    tiktok_oauth_available: false,
+                },
+            });
+            return;
+        }
+
+        if (method === "POST" && path === "/auth/sync/social") {
+            const payload = request.postDataJSON() as any;
+            const platform = payload.platform as "youtube" | "instagram" | "tiktok";
+            if (platform && Object.prototype.hasOwnProperty.call(connectedPlatforms, platform)) {
+                connectedPlatforms[platform] = true;
+            }
+            await json(200, {
+                user_id: "smoke-user",
+                email: payload.email || "smoke@example.com",
+                platform: platform || "instagram",
+                connected: true,
+                session_token: "smoke-session-token",
+                session_expires_at: 1790000000,
+                profile: {
+                    platform: platform || "instagram",
+                    external_id: payload.external_id || payload.handle || "@smokecreator",
+                    handle: payload.handle || "@smokecreator",
+                    display_name: payload.display_name || "Smoke Creator",
+                    subscriber_count: payload.follower_count || "0",
+                    profile_picture_url: null,
+                },
+            });
+            return;
+        }
+
         if (method === "GET" && path === "/competitors/") {
-            const competitors = competitorCount > 0
-                ? [{
-                    id: "comp-1",
-                    channel_id: "UC_COMP_1",
-                    title: "Mock Competitor Channel",
-                    platform: "youtube",
-                    custom_url: "@mockcompetitor",
-                    subscriber_count: 12345,
-                    video_count: 100,
-                    thumbnail_url: "https://example.com/thumb.jpg",
-                    created_at: "2026-02-12T12:00:00Z",
-                }]
-                : [];
             await json(200, competitors);
             return;
         }
 
         if (method === "POST" && path === "/competitors/") {
-            competitorCount = 1;
-            await json(200, {
+            const created = {
                 id: "comp-1",
                 channel_id: "UC_COMP_1",
                 title: "Mock Competitor Channel",
@@ -340,7 +386,27 @@ async function installApiMocks(page: Page) {
                 video_count: 100,
                 thumbnail_url: "https://example.com/thumb.jpg",
                 created_at: "2026-02-12T12:00:00Z",
-            });
+            };
+            competitors.push(created);
+            await json(200, created);
+            return;
+        }
+
+        if (method === "POST" && path === "/competitors/manual") {
+            const payload = request.postDataJSON() as any;
+            const created = {
+                id: `comp-${competitors.length + 1}`,
+                channel_id: payload.external_id || payload.handle || `creator-${competitors.length + 1}`,
+                title: payload.display_name || payload.handle || "Manual Competitor",
+                platform: payload.platform || "instagram",
+                custom_url: payload.handle || "@manualcompetitor",
+                subscriber_count: payload.subscriber_count || 0,
+                video_count: null,
+                thumbnail_url: payload.thumbnail_url || null,
+                created_at: "2026-02-12T12:00:00Z",
+            };
+            competitors.push(created);
+            await json(200, created);
             return;
         }
 
@@ -386,6 +452,60 @@ async function installApiMocks(page: Page) {
                         recommended_angle: "Run this as a repeatable arc with strong proof early.",
                     },
                 ],
+            });
+            return;
+        }
+
+        if (method === "POST" && path === "/competitors/discover") {
+            await json(200, {
+                platform: "instagram",
+                query: "ai news",
+                page: 1,
+                limit: 20,
+                total_count: 2,
+                has_more: false,
+                candidates: [
+                    {
+                        external_id: "ig-creator-1",
+                        handle: "@ainewslab",
+                        display_name: "AI News Lab",
+                        subscriber_count: 12000,
+                        video_count: 16,
+                        view_count: 820000,
+                        avg_views_per_video: 51250,
+                        thumbnail_url: "https://example.com/ig1.jpg",
+                        source: "research_corpus",
+                        quality_score: 38.4,
+                        already_tracked: false,
+                    },
+                    {
+                        external_id: "ig-creator-2",
+                        handle: "@growthradar",
+                        display_name: "Growth Radar",
+                        subscriber_count: 9800,
+                        video_count: 11,
+                        view_count: 430000,
+                        avg_views_per_video: 39090,
+                        thumbnail_url: "https://example.com/ig2.jpg",
+                        source: "research_corpus",
+                        quality_score: 34.2,
+                        already_tracked: false,
+                    },
+                ],
+            });
+            return;
+        }
+
+        if (method === "POST" && path === "/competitors/blueprint") {
+            await json(200, {
+                ...buildMockReport("blueprint-seed", "instagram").blueprint,
+                dataset_summary: {
+                    platform: "instagram",
+                    research_items_scanned: 18,
+                    mapped_competitor_items: 11,
+                    mapped_user_items: 4,
+                    data_quality_tier: "medium",
+                },
             });
             return;
         }
@@ -437,6 +557,42 @@ async function installApiMocks(page: Page) {
                     charged: 1,
                     balance_after: 8,
                 },
+            });
+            return;
+        }
+
+        if (method === "POST" && path === "/research/import_url") {
+            await json(200, {
+                item_id: "research-import-1",
+                platform: "instagram",
+                source_type: "manual_url",
+                url: "https://www.instagram.com/reel/C1234567890/",
+                external_id: "ig-import-1",
+                creator_handle: "@ainewslab",
+                creator_display_name: "AI News Lab",
+                title: "AI News Hook Breakdown",
+                caption: "How to structure AI News hooks",
+                metrics: { views: 84000, likes: 4200, comments: 190, shares: 120, saves: 88 },
+                media_meta: {},
+                collection_id: "collection-default",
+            });
+            return;
+        }
+
+        if (method === "POST" && path === "/research/capture") {
+            await json(200, {
+                item_id: "research-capture-1",
+                platform: "instagram",
+                source_type: "capture",
+                url: "https://www.instagram.com/reel/C2222222/",
+                external_id: "ig-capture-1",
+                creator_handle: "@growthradar",
+                creator_display_name: "Growth Radar",
+                title: "AI News pacing teardown",
+                caption: "Captured reel entry",
+                metrics: { views: 56000, likes: 2800, comments: 150, shares: 90, saves: 70 },
+                media_meta: {},
+                collection_id: "collection-default",
             });
             return;
         }
@@ -672,20 +828,25 @@ async function installApiMocks(page: Page) {
 
         if (method === "POST" && path === "/audit/run_multimodal") {
             let sourceMode = "url";
+            let requestedPlatform: "youtube" | "instagram" | "tiktok" = "youtube";
             try {
-                const payload = request.postDataJSON() as { source_mode?: string };
+                const payload = request.postDataJSON() as { source_mode?: string; platform?: "youtube" | "instagram" | "tiktok" };
                 sourceMode = payload?.source_mode || "url";
+                requestedPlatform = payload?.platform || "youtube";
             } catch {
                 sourceMode = "url";
+                requestedPlatform = "youtube";
             }
             await json(200, {
-                audit_id: sourceMode === "upload" ? MOCK_UPLOAD_AUDIT_ID : MOCK_AUDIT_ID,
+                audit_id: requestedPlatform === "instagram"
+                    ? MOCK_IG_AUDIT_ID
+                    : (sourceMode === "upload" ? MOCK_UPLOAD_AUDIT_ID : MOCK_AUDIT_ID),
                 status: "running",
             });
             return;
         }
 
-        if (method === "GET" && (path === `/audit/${MOCK_AUDIT_ID}` || path === `/audit/${MOCK_UPLOAD_AUDIT_ID}`)) {
+        if (method === "GET" && (path === `/audit/${MOCK_AUDIT_ID}` || path === `/audit/${MOCK_UPLOAD_AUDIT_ID}` || path === `/audit/${MOCK_IG_AUDIT_ID}`)) {
             const auditId = path.split("/").pop() || MOCK_AUDIT_ID;
             pollCountByAudit[auditId] = (pollCountByAudit[auditId] || 0) + 1;
             const completed = pollCountByAudit[auditId] >= 1;
@@ -697,9 +858,10 @@ async function installApiMocks(page: Page) {
             return;
         }
 
-        if (method === "GET" && (path === `/report/${MOCK_AUDIT_ID}` || path === `/report/${MOCK_UPLOAD_AUDIT_ID}`)) {
+        if (method === "GET" && (path === `/report/${MOCK_AUDIT_ID}` || path === `/report/${MOCK_UPLOAD_AUDIT_ID}` || path === `/report/${MOCK_IG_AUDIT_ID}`)) {
             const auditId = path.split("/").pop() || MOCK_AUDIT_ID;
-            await json(200, buildMockReport(auditId));
+            const platform = auditId === MOCK_IG_AUDIT_ID ? "instagram" : "youtube";
+            await json(200, buildMockReport(auditId, platform));
             return;
         }
 
@@ -788,4 +950,47 @@ test("research -> variants -> rescore smoke flow", async ({ page }) => {
     await page.getByRole("button", { name: "Save Iteration" }).click();
     await expect(page.getByText("Iteration History")).toBeVisible();
     await expect(page.getByText(/Score 81/)).toBeVisible();
+});
+
+test("instagram parity -> connect -> discover -> blueprint -> upload audit -> report smoke flow", async ({ page }) => {
+    await installApiMocks(page);
+    await installLocalAuthState(page);
+
+    await page.goto("/connect");
+    await page.getByPlaceholder("Email").fill("ig-user@example.com");
+    await page.getByPlaceholder("@handle").fill("@igcreator");
+    await page.getByRole("button", { name: "Connect Account" }).click();
+    await expect(page.getByText(/Connected instagram/i)).toBeVisible();
+
+    await page.goto("/research");
+    await page.getByPlaceholder("Paste post/reel/video URL").fill("https://www.instagram.com/reel/C1234567890/");
+    await page.getByRole("button", { name: "Import URL" }).click();
+    await expect(page.getByRole("heading", { name: "Research Studio" })).toBeVisible();
+
+    await page.goto("/competitors");
+    await page.locator("select").filter({ hasText: "YouTube Analysis" }).first().selectOption("instagram");
+    await page.getByPlaceholder("Find instagram creators by niche (optional)").fill("ai news");
+    await page.getByRole("button", { name: "Discover Candidates" }).click();
+    await expect(page.getByText("AI News Lab")).toBeVisible();
+    await page.locator("label", { hasText: "AI News Lab" }).locator('input[type="checkbox"]').check();
+    await page.getByRole("button", { name: /Import Selected \(1\)/ }).click();
+    await expect(page.getByText("AI News Lab").first()).toBeVisible();
+
+    await page.getByRole("button", { name: /Generate instagram Strategy Blueprint/i }).click();
+    await expect(page.getByText("Dataset Quality")).toBeVisible();
+    await expect(page.getByText(/tier medium/i)).toBeVisible();
+
+    await page.goto("/audit/new");
+    await page.locator("select").first().selectOption("instagram");
+    await page.getByRole("button", { name: "Upload" }).click();
+    await page.setInputFiles('input[type="file"]', {
+        name: "sample.mp4",
+        mimeType: "video/mp4",
+        buffer: Buffer.from("synthetic-video-content"),
+    });
+    await page.getByRole("button", { name: "Run Audit" }).click();
+
+    await expect(page).toHaveURL(new RegExp(`/report/${MOCK_IG_AUDIT_ID}$`), { timeout: 20_000 });
+    await expect(page.getByText(/Report platform: instagram/i)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Prediction Confidence" })).toBeVisible();
 });

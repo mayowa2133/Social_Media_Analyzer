@@ -114,8 +114,11 @@ def _normalize_recommendations(
     return deduped[:8]
 
 
-def _fallback_blueprint(reason: str = "") -> Dict[str, Any]:
+def _fallback_blueprint(reason: str = "", platform: str = "youtube") -> Dict[str, Any]:
     note = reason or "Blueprint fallback generated because live blueprint refresh failed."
+    platform_key = str(platform or "youtube").strip().lower()
+    if platform_key not in {"youtube", "instagram", "tiktok"}:
+        platform_key = "youtube"
     return {
         "gap_analysis": [note],
         "content_pillars": ["Audience Pain Points", "Execution Frameworks", "Retention Tweaks"],
@@ -190,6 +193,13 @@ def _fallback_blueprint(reason: str = "") -> Dict[str, Any]:
             "sample_size": 0,
             "total_detected_series": 0,
             "series": [],
+        },
+        "dataset_summary": {
+            "platform": platform_key,
+            "research_items_scanned": 0,
+            "mapped_competitor_items": 0,
+            "mapped_user_items": 0,
+            "data_quality_tier": "low",
         },
     }
 
@@ -506,7 +516,10 @@ async def _get_or_refresh_blueprint(
         if cached_payload:
             return cached_payload
 
-        fallback = _fallback_blueprint("Blueprint live refresh failed; using deterministic fallback.")
+        fallback = _fallback_blueprint(
+            "Blueprint live refresh failed; using deterministic fallback.",
+            platform=platform_key,
+        )
         if snapshot is None:
             snapshot = BlueprintSnapshot(
                 user_id=user_id,
@@ -599,6 +612,7 @@ async def get_consolidated_report(user_id: str, audit_id: Optional[str], db: Asy
 
     return {
         "audit_id": audit.id if audit else "new",
+        "report_platform": report_platform,
         "created_at": audit.created_at.isoformat() if audit else None,
         "overall_score": round(overall_score),
         "diagnosis": diagnosis,

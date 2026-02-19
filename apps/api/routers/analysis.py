@@ -92,6 +92,7 @@ class PlatformMetricsCsvIngestResponse(BaseModel):
     successful_rows: int
     failed_rows: int
     failures: List[Dict[str, Any]]
+    normalized_fields: Dict[str, str]
 
 
 def _coerce_int(value: Any, default: int = 0) -> int:
@@ -343,6 +344,16 @@ async def ingest_platform_metrics_csv(
     failures: List[Dict[str, Any]] = []
     processed_rows = 0
     successful_rows = 0
+    normalized_presence: Dict[str, bool] = {
+        "views": False,
+        "likes": False,
+        "comments": False,
+        "shares": False,
+        "saves": False,
+        "retention_points": False,
+        "avg_view_duration_s": False,
+        "ctr": False,
+    }
 
     try:
         content = await file.read()
@@ -388,6 +399,22 @@ async def ingest_platform_metrics_csv(
                     for item in _parse_retention_points_raw(row.get("retention_points_json"))
                 ] or None,
             )
+            if str(row.get("views", "")).strip():
+                normalized_presence["views"] = True
+            if str(row.get("likes", "")).strip():
+                normalized_presence["likes"] = True
+            if str(row.get("comments", "")).strip():
+                normalized_presence["comments"] = True
+            if str(row.get("shares", "")).strip():
+                normalized_presence["shares"] = True
+            if str(row.get("saves", "")).strip():
+                normalized_presence["saves"] = True
+            if request_payload.retention_points:
+                normalized_presence["retention_points"] = True
+            if str(row.get("avg_view_duration_s", "")).strip():
+                normalized_presence["avg_view_duration_s"] = True
+            if str(row.get("ctr", "")).strip():
+                normalized_presence["ctr"] = True
             await _ingest_platform_metrics_record(scoped_user_id, request_payload, db)
             successful_rows += 1
         except Exception as exc:
@@ -400,4 +427,14 @@ async def ingest_platform_metrics_csv(
         successful_rows=successful_rows,
         failed_rows=len(failures),
         failures=failures[:50],
+        normalized_fields={
+            "views": "mapped" if normalized_presence["views"] else "missing",
+            "likes": "mapped" if normalized_presence["likes"] else "missing",
+            "comments": "mapped" if normalized_presence["comments"] else "missing",
+            "shares": "mapped" if normalized_presence["shares"] else "missing",
+            "saves": "mapped" if normalized_presence["saves"] else "missing",
+            "retention_points": "mapped" if normalized_presence["retention_points"] else "missing",
+            "avg_view_duration_s": "mapped" if normalized_presence["avg_view_duration_s"] else "missing",
+            "ctr": "mapped" if normalized_presence["ctr"] else "missing",
+        },
     )

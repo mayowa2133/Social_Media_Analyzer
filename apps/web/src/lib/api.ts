@@ -196,6 +196,30 @@ export interface CurrentUserResponse {
         subscriber_count?: string;
         profile_picture_url?: string;
     }>;
+    connector_capabilities?: {
+        instagram_oauth_available: boolean;
+        tiktok_oauth_available: boolean;
+    };
+}
+
+export interface ConnectPlatformStartResponse {
+    platform: "instagram" | "tiktok";
+    oauth_available: boolean;
+    connect_url?: string | null;
+    state?: string | null;
+    provider?: string | null;
+    setup_message: string;
+    manual_fallback_supported: boolean;
+}
+
+export interface ConnectPlatformCallbackRequest {
+    code: string;
+    state: string;
+    email?: string;
+    name?: string;
+    picture?: string;
+    user_id?: string;
+    redirect_uri?: string;
 }
 
 export async function syncYouTubeSession(payload: SyncYouTubeSessionRequest): Promise<SyncYouTubeSessionResponse> {
@@ -214,6 +238,27 @@ export async function getCurrentUserProfile(): Promise<CurrentUserResponse> {
 
 export async function syncSocialConnection(payload: SyncSocialConnectionRequest): Promise<SyncSocialConnectionResponse> {
     const result = await fetchApi<SyncSocialConnectionResponse>("/auth/sync/social", {
+        method: "POST",
+        body: payload,
+    });
+    setCurrentUserId(result.user_id);
+    setBackendSessionToken(result.session_token);
+    return result;
+}
+
+export async function connectSocialPlatformStart(
+    platform: "instagram" | "tiktok"
+): Promise<ConnectPlatformStartResponse> {
+    return fetchApi<ConnectPlatformStartResponse>(`/auth/connect/${platform}/start`, {
+        method: "POST",
+    });
+}
+
+export async function connectSocialPlatformCallback(
+    platform: "instagram" | "tiktok",
+    payload: ConnectPlatformCallbackRequest
+): Promise<SyncSocialConnectionResponse> {
+    const result = await fetchApi<SyncSocialConnectionResponse>(`/auth/connect/${platform}/callback`, {
         method: "POST",
         body: payload,
     });
@@ -440,6 +485,13 @@ export interface BlueprintResult {
     transcript_quality?: BlueprintTranscriptQuality;
     velocity_actions?: BlueprintVelocityAction[];
     series_intelligence?: SeriesIntelligence;
+    dataset_summary?: {
+        platform: "youtube" | "instagram" | "tiktok";
+        research_items_scanned?: number;
+        mapped_competitor_items: number;
+        mapped_user_items: number;
+        data_quality_tier: "high" | "medium" | "low";
+    };
 }
 
 export interface RecommendedCompetitor {
@@ -461,6 +513,30 @@ export interface RecommendCompetitorsResponse {
     total_count: number;
     has_more: boolean;
     recommendations: RecommendedCompetitor[];
+}
+
+export interface DiscoverCompetitorCandidate {
+    external_id: string;
+    handle: string;
+    display_name: string;
+    subscriber_count: number;
+    video_count: number;
+    view_count: number;
+    avg_views_per_video: number;
+    thumbnail_url?: string;
+    source: string;
+    quality_score: number;
+    already_tracked: boolean;
+}
+
+export interface DiscoverCompetitorsResponse {
+    platform: "youtube" | "instagram" | "tiktok";
+    query: string;
+    page: number;
+    limit: number;
+    total_count: number;
+    has_more: boolean;
+    candidates: DiscoverCompetitorCandidate[];
 }
 
 export type CompetitorSuggestionSortBy =
@@ -690,6 +766,25 @@ export async function recommendCompetitors(
     );
 }
 
+export async function discoverCompetitors(payload: {
+    platform: "youtube" | "instagram" | "tiktok";
+    query?: string;
+    page?: number;
+    limit?: number;
+    userId?: string;
+}): Promise<DiscoverCompetitorsResponse> {
+    return fetchApi<DiscoverCompetitorsResponse>("/competitors/discover", {
+        method: "POST",
+        body: {
+            platform: payload.platform,
+            query: payload.query || "",
+            page: payload.page ?? 1,
+            limit: payload.limit ?? 12,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
 export async function addManualCompetitor(payload: {
     platform: "youtube" | "instagram" | "tiktok";
     handle: string;
@@ -799,6 +894,16 @@ export interface PlatformMetricsCsvIngestResponse {
     successful_rows: number;
     failed_rows: number;
     failures: Array<Record<string, any>>;
+    normalized_fields: {
+        views: string;
+        likes: string;
+        comments: string;
+        shares: string;
+        saves: string;
+        retention_points: string;
+        avg_view_duration_s: string;
+        ctr: string;
+    };
 }
 
 export async function ingestPlatformMetrics(payload: PlatformMetricsIngestRecord): Promise<PlatformMetricsIngestResponse> {
@@ -915,6 +1020,7 @@ export async function getAudits(userId?: string, limit = 20): Promise<AuditSumma
 
 export interface ConsolidatedReport {
     audit_id: string;
+    report_platform: "youtube" | "instagram" | "tiktok";
     created_at?: string | null;
     overall_score: number;
     diagnosis: DiagnosisResult;

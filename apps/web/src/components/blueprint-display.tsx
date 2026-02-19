@@ -28,6 +28,7 @@ export function BlueprintDisplay({ blueprint, loading }: BlueprintDisplayProps) 
         }
         return Math.round(normalized * 100);
     };
+    const datasetSummary = blueprint.dataset_summary;
 
     const renderFormatHookProfile = (profile: HookFormatProfile) => (
         <div key={profile.format} className="rounded-xl border border-[#dddddd] bg-[#fafafa] p-4">
@@ -65,6 +66,16 @@ export function BlueprintDisplay({ blueprint, loading }: BlueprintDisplayProps) 
 
     return (
         <div className="space-y-8">
+            {datasetSummary && (
+                <div className="rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                    <h3 className="text-sm font-semibold text-[#222]">Dataset Quality</h3>
+                    <p className="mt-1 text-xs text-[#666]">
+                        {datasetSummary.platform} · tier {datasetSummary.data_quality_tier} · competitor items {datasetSummary.mapped_competitor_items} · user items {datasetSummary.mapped_user_items}
+                        {typeof datasetSummary.research_items_scanned === "number" ? ` · scanned ${datasetSummary.research_items_scanned}` : ""}
+                    </p>
+                </div>
+            )}
+
             <div className="rounded-2xl border border-[#dcdcdc] bg-white p-6">
                 <h3 className="mb-4 flex items-center gap-2 text-xl font-bold text-[#222]">
                     <span>🧠</span> Gap Analysis

@@ -33,10 +33,28 @@ interface GuidedPlatformMetricsInput {
     ctr: string;
 }
 
+function inferPlatformFromUrl(url: string): "youtube" | "instagram" | "tiktok" | null {
+    const normalized = url.trim().toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+    if (normalized.includes("instagram.com")) {
+        return "instagram";
+    }
+    if (normalized.includes("tiktok.com")) {
+        return "tiktok";
+    }
+    if (normalized.includes("youtube.com") || normalized.includes("youtu.be")) {
+        return "youtube";
+    }
+    return null;
+}
+
 export default function NewAuditPage() {
     const router = useRouter();
     const { data: session } = useSession();
     const [sourceMode, setSourceMode] = useState<"url" | "upload">("url");
+    const [selectedPlatform, setSelectedPlatform] = useState<"youtube" | "instagram" | "tiktok">("youtube");
     const [videoUrl, setVideoUrl] = useState("");
     const [videoFile, setVideoFile] = useState<File | null>(null);
     const [retentionJson, setRetentionJson] = useState("");
@@ -95,6 +113,7 @@ export default function NewAuditPage() {
                     item.url ||
                     `Imported ${item.platform} item`
             );
+            setSelectedPlatform(item.platform);
             if (item.url) {
                 setSourceMode("url");
                 setVideoUrl(item.url);
@@ -117,6 +136,16 @@ export default function NewAuditPage() {
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    useEffect(() => {
+        if (sourceMode !== "url") {
+            return;
+        }
+        const inferred = inferPlatformFromUrl(videoUrl);
+        if (inferred && selectedPlatform === "youtube" && inferred !== "youtube") {
+            setSelectedPlatform(inferred);
+        }
+    }, [sourceMode, videoUrl, selectedPlatform]);
 
     function updateRetentionRow(index: number, key: keyof RetentionRowInput, value: string) {
         setRetentionRows((prev) =>
@@ -147,7 +176,7 @@ export default function NewAuditPage() {
         setProgressMessage(null);
 
         if (sourceMode === "url" && !videoUrl.trim()) {
-            setError("Enter a YouTube video URL to run the audit.");
+            setError("Enter a video URL to run the audit.");
             return;
         }
         if (sourceMode === "upload" && !videoFile) {
@@ -245,7 +274,7 @@ export default function NewAuditPage() {
         try {
             const userId = await resolveUserId();
             if (!userId) {
-                throw new Error("Connect YouTube before running audits so your session can be authenticated.");
+                throw new Error("Connect a platform before running audits so your session can be authenticated.");
             }
             let run;
             if (sourceMode === "upload") {
@@ -253,14 +282,17 @@ export default function NewAuditPage() {
                 const upload = await uploadAuditVideo(videoFile as File, userId);
                 run = await runMultimodalAudit({
                     source_mode: "upload",
+                    platform: selectedPlatform,
                     upload_id: upload.upload_id,
                     retention_points: retentionPoints,
                     platform_metrics: platformMetrics,
                     user_id: userId,
                 });
             } else {
+                const inferred = inferPlatformFromUrl(videoUrl.trim());
                 run = await runMultimodalAudit({
                     source_mode: "url",
+                    platform: inferred || selectedPlatform,
                     video_url: videoUrl.trim(),
                     retention_points: retentionPoints,
                     platform_metrics: platformMetrics,
@@ -329,6 +361,22 @@ export default function NewAuditPage() {
                         <aside className="border-b border-[#dfdfdf] bg-[#f8f8f8] p-4 xl:border-b-0 xl:border-r">
                             <h2 className="mb-1 text-sm font-semibold text-[#222]">Source Setup</h2>
                             <p className="mb-4 text-xs text-[#777]">Start with a URL or upload your clip.</p>
+                            <div className="mb-4 space-y-1">
+                                <label className="text-xs font-medium text-[#4f4f4f]">Platform</label>
+                                <select
+                                    value={selectedPlatform}
+                                    onChange={(e) => setSelectedPlatform(e.target.value as "youtube" | "instagram" | "tiktok")}
+                                    className="w-full rounded-xl border border-[#d8d8d8] bg-white px-3 py-2 text-sm text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                    disabled={running}
+                                >
+                                    <option value="youtube">YouTube</option>
+                                    <option value="instagram">Instagram</option>
+                                    <option value="tiktok">TikTok</option>
+                                </select>
+                                <p className="text-[11px] text-[#7b7b7b]">
+                                    Required for upload mode; URL mode can auto-infer from link domain.
+                                </p>
+                            </div>
 
                             <div className="mb-4 grid grid-cols-2 gap-2 rounded-xl border border-[#dfdfdf] bg-[#efefef] p-1">
                                 <button
@@ -359,10 +407,21 @@ export default function NewAuditPage() {
                                     <input
                                         value={videoUrl}
                                         onChange={(e) => setVideoUrl(e.target.value)}
-                                        placeholder="https://www.youtube.com/watch?v=..."
+                                        placeholder="https://www.youtube.com/watch?v=... / instagram.com/reel/... / tiktok.com/..."
                                         className="w-full rounded-xl border border-[#d8d8d8] bg-white px-3 py-2 text-sm text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
                                         disabled={running}
                                     />
+                                    {(() => {
+                                        const inferred = inferPlatformFromUrl(videoUrl);
+                                        if (!inferred || inferred === selectedPlatform) {
+                                            return null;
+                                        }
+                                        return (
+                                            <p className="text-[11px] text-[#8a6438]">
+                                                URL suggests {inferred}. Current platform is {selectedPlatform}; you can keep or switch.
+                                            </p>
+                                        );
+                                    })()}
                                 </div>
                             ) : (
                                 <div className="space-y-2">
