@@ -1,6 +1,6 @@
 # Social Media Analyzer (Social Performance Coach)
 
-YouTube-first social media analytics platform that helps creators understand why some videos outperform others, benchmark against competitors, and generate actionable recommendations.
+YouTube-benchmark social media analytics platform with IG/TikTok parity foundations, helping creators understand why some videos outperform others, benchmark competitors, and generate actionable recommendations.
 
 This repository is a monorepo with:
 - `apps/api`: FastAPI backend (YouTube ingestion, analysis, audit pipeline, reports).
@@ -8,16 +8,22 @@ This repository is a monorepo with:
 
 ## Current MVP Scope
 
-This MVP is currently focused on YouTube.
+This MVP keeps YouTube as the scoring benchmark backbone, with IG/TikTok parity implemented for research ingestion, competitor tracking, and playbook generation.
 
 Implemented:
 - Google OAuth connection flow (NextAuth on frontend, encrypted token persistence in backend).
+- Manual social connection sync for Instagram/TikTok (`POST /auth/sync/social`) with backend session minting.
 - Backend-authenticated session token after OAuth sync; protected APIs derive `user_id` from Bearer token (no `test-user` fallback).
 - Channel diagnosis (`packaging`, `consistency`, topic and format-aware analysis).
 - Competitor tracking (add/list/remove).
+- Cross-platform competitor tracking:
+  - manual competitors for YouTube/Instagram/TikTok (`POST /competitors/manual`)
+  - import competitors from research creator data (`POST /competitors/import_from_research`).
 - Competitor recommendations by niche:
   - ranking controls (`subscriber_count`, `avg_views_per_video`, `view_count`)
   - pagination support.
+- Strategy blueprint generation with hook intelligence:
+  - now platform-aware (`youtube`, `instagram`, `tiktok`) in `/competitors/blueprint`.
 - Strategy blueprint generation with hook intelligence:
   - common hook patterns
   - competitor hook examples
@@ -34,6 +40,7 @@ Implemented:
   - platform metrics
   - combined metrics (with historical posted-video calibration when enough data is available).
 - Consolidated report contract and report pages (`/report/latest`, `/report/{audit_id}`).
+- Shareable report links (`POST /report/{audit_id}/share`, `GET /report/shared/{token}`).
 - Playwright smoke test flow in CI (`connect -> competitors -> audit -> report`).
 - Research parity foundation (YouTube + IG/TikTok metadata ingestion) with:
   - URL import (`/research/import_url`)
@@ -53,11 +60,12 @@ Implemented:
   - create share links (`POST /report/{audit_id}/share`)
   - open public share report (`GET /report/shared/{token}`).
 - Additional Playwright smoke flow (`research -> variants -> rescore`).
+- Additional Playwright smoke flow (`upload -> score -> recommendations`).
 
 Out of scope for this MVP:
-- Native TikTok and Instagram connectors (disabled).
+- Native Instagram/TikTok OAuth provider integrations beyond manual sync.
 - Multi-user production hardening.
-- Direct retention curve ingest from YouTube Studio API exports.
+- Fully automated first-party IG/TikTok analytics APIs (beyond CSV/manual ingest paths).
 
 ## High-Level Architecture
 
@@ -245,11 +253,12 @@ Mixing `127.0.0.1` and `localhost` commonly causes connect/sign-in loops.
 
 1. Connect account:
 - Go to `/connect`
-- Click `Connect` for YouTube.
+- Connect YouTube via Google OAuth, and optionally sync Instagram/TikTok manually.
 
 2. Add competitors:
 - Go to `/competitors`
 - Add a channel URL or handle.
+- For IG/TikTok, optionally import competitors from research data.
 - Optionally use niche suggestions and ranking controls.
 
 3. Generate blueprint:
@@ -279,6 +288,7 @@ Legacy route behavior:
 ### Auth
 - `GET /auth/me` (Bearer session token required)
 - `POST /auth/sync/youtube`
+- `POST /auth/sync/social`
 - `POST /auth/logout`
 
 ### YouTube
@@ -298,11 +308,18 @@ Video detail contract uses:
 
 ### Competitors
 - `POST /competitors/`
+- `POST /competitors/manual`
+- `POST /competitors/import_from_research`
 - `GET /competitors/?user_id=...`
 - `DELETE /competitors/{competitor_id}?user_id=...`
 - `GET /competitors/{competitor_id}/videos?user_id=...`
 - `POST /competitors/recommend`
 - `POST /competitors/blueprint`
+- `POST /competitors/series`
+- `POST /competitors/series/plan`
+- `POST /competitors/script/generate`
+- `POST /competitors/series/calendar`
+- `POST /competitors/series/next_episode`
 
 ### Audit
 - `POST /audit/upload` (multipart)
@@ -313,6 +330,38 @@ Video detail contract uses:
 ### Report
 - `GET /report/latest?user_id=...`
 - `GET /report/{audit_id}?user_id=...`
+- `POST /report/{audit_id}/share`
+- `GET /report/shared/{token}`
+
+### Research
+- `POST /research/import_url`
+- `POST /research/capture`
+- `POST /research/import_csv`
+- `POST /research/search`
+- `GET /research/collections`
+- `POST /research/collections`
+- `GET /research/items/{item_id}`
+- `POST /research/items/{item_id}/move`
+- `POST /research/items/{item_id}/meta`
+- `POST /research/export`
+- `GET /research/export/{export_id}/download`
+
+### Optimizer
+- `POST /optimizer/variant_generate`
+- `POST /optimizer/rescore`
+- `POST /optimizer/draft_snapshot`
+- `GET /optimizer/draft_snapshot`
+- `GET /optimizer/draft_snapshot/{snapshot_id}`
+
+### Outcomes
+- `POST /outcomes/ingest`
+- `GET /outcomes/summary`
+- `POST /outcomes/recalibrate`
+
+### Billing
+- `GET /billing/credits`
+- `POST /billing/checkout`
+- `POST /billing/topup`
 
 ## Testing
 
@@ -331,8 +380,10 @@ npx tsc --noEmit
 npm run smoke
 ```
 
-Smoke scenario covered:
+Smoke scenarios covered:
 - connect -> competitors -> audit -> report
+- upload -> score -> recommendations
+- research -> variants -> rescore
 
 ## CI
 
@@ -377,7 +428,7 @@ Behavior:
 
 ### Missing Bearer session token
 - Protected routes now require backend session auth.
-- Connect YouTube first (`/connect`) to sync OAuth and mint backend session token.
+- Connect YouTube (`/auth/sync/youtube`) or sync Instagram/TikTok manually (`/auth/sync/social`) to mint backend session token.
 
 ## Additive Report Fields (Examples)
 
@@ -394,6 +445,7 @@ Behavior:
 `blueprint` now includes:
 - `transcript_quality`
 - `velocity_actions[]`
+- `dataset_summary` (platform + mapped dataset counts)
 
 ## Security Notes
 

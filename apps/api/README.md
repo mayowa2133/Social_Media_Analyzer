@@ -1,33 +1,84 @@
 # Social Performance Coach API
 
-## Database setup
+FastAPI backend for Social Media Analyzer.
 
-This API supports two schema bootstrap paths:
+## What It Supports
 
-1. Runtime bootstrap (default for local dev):
-   - Set `AUTO_CREATE_DB_SCHEMA=true` in `.env`
-   - The app will run `Base.metadata.create_all()` at startup.
+- Auth/session sync:
+  - `POST /auth/sync/youtube`
+  - `POST /auth/sync/social`
+  - `GET /auth/me`
+- Competitor intelligence:
+  - YouTube + Instagram + TikTok competitor tracking
+  - research-driven competitor import (`/competitors/import_from_research`)
+  - platform-aware blueprint/series/script endpoints
+- Audit + reports:
+  - upload/url audit entrypoints
+  - durable RQ worker processing
+  - consolidated + shareable reports
+- Research + optimizer + outcomes loop:
+  - research import/search/export
+  - AI-first script variants + rescore + draft snapshots
+  - predicted-vs-actual outcomes + calibration summaries
 
-2. Alembic migrations (recommended for controlled environments):
-   - `cd apps/api`
-   - `DATABASE_URL=postgresql://... ./venv/bin/alembic -c alembic.ini upgrade head`
+## Local Setup
 
-Migration files live in `apps/api/alembic/versions`.
-
-## Worker queue
-
-Audit execution is queue-backed using Redis/RQ.
-
-Start worker locally:
+1. Install deps:
 
 ```bash
 cd apps/api
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+2. Configure env:
+
+```bash
+cp .env.example .env
+```
+
+Set required values:
+- `DATABASE_URL`
+- `YOUTUBE_API_KEY`
+- `JWT_SECRET` (>=24 chars)
+- `ENCRYPTION_KEY` (>=32 chars)
+
+3. Start API:
+
+```bash
+uvicorn main:app --host localhost --port 8000 --reload
+```
+
+4. Start worker (separate terminal):
+
+```bash
 python worker.py
 ```
 
-## Security defaults
+## Database Bootstrap
 
-Startup now fails if insecure default secrets are still configured.
-Set strong values for:
-- `JWT_SECRET` (>=24 chars)
-- `ENCRYPTION_KEY` (>=32 chars)
+Two supported paths:
+
+1. Runtime bootstrap (local dev default):
+- `AUTO_CREATE_DB_SCHEMA=true`
+- App runs `Base.metadata.create_all()` at startup.
+
+2. Alembic migrations:
+
+```bash
+cd apps/api
+alembic -c alembic.ini upgrade head
+```
+
+## Tests
+
+```bash
+cd apps/api
+PYTHONPATH=. pytest -q tests analysis/tests
+```
+
+## Notes
+
+- Security startup guard fails boot when `JWT_SECRET`/`ENCRYPTION_KEY` are insecure defaults.
+- OpenAI is optional; deterministic fallbacks are built into scoring/optimizer flows.
