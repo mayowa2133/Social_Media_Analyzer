@@ -3,6 +3,7 @@ Social Performance Coach - FastAPI Backend
 Main application entry point with health check and API routing.
 """
 
+import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -25,6 +26,23 @@ from routers import (
     billing,
 )
 from services.audit_queue import recover_stalled_audits
+from services.outcomes import run_calibration_refresh_for_all_users_service
+
+
+async def _periodic_outcome_recalibration() -> None:
+    interval_minutes = max(int(settings.OUTCOME_RECALIBRATE_INTERVAL_MINUTES), 0)
+    if interval_minutes <= 0:
+        return
+    while True:
+        await asyncio.sleep(interval_minutes * 60)
+        try:
+            result = await run_calibration_refresh_for_all_users_service()
+            print(
+                f"📈 Outcome recalibration: refreshed={result.get('refreshed', 0)} "
+                f"skipped={result.get('skipped', 0)}"
+            )
+        except Exception as exc:
+            print(f"⚠️ Outcome recalibration tick failed: {exc}")
 
 
 @asynccontextmanager
@@ -46,8 +64,21 @@ async def lifespan(app: FastAPI):
             print(f"♻️ Recovered {recovered} stalled audits after startup.")
     except Exception as exc:
         print(f"⚠️ Stalled audit recovery skipped: {exc}")
+    recalibration_task = None
+    if settings.OUTCOME_LEARNING_ENABLED and int(settings.OUTCOME_RECALIBRATE_INTERVAL_MINUTES) > 0:
+        recalibration_task = asyncio.create_task(_periodic_outcome_recalibration())
+        print(
+            "📅 Outcome recalibration loop enabled "
+            f"(every {int(settings.OUTCOME_RECALIBRATE_INTERVAL_MINUTES)} min)."
+        )
     yield
     # Shutdown
+    if recalibration_task is not None:
+        recalibration_task.cancel()
+        try:
+            await recalibration_task
+        except asyncio.CancelledError:
+            pass
     print("👋 Shutting down API...")
 
 

@@ -14,7 +14,9 @@ from config import settings, require_youtube_api_key
 from database import async_session_maker
 from models.audit import Audit
 from models.competitor import Competitor
+from models.outcome_metric import OutcomeMetric
 from models.profile import Profile
+from models.research_item import ResearchItem
 from models.video import Video
 from models.video_metrics import VideoMetrics
 from ingestion.youtube import create_youtube_client_with_api_key
@@ -139,6 +141,21 @@ def _extract_youtube_video_id(url: Optional[str]) -> Optional[str]:
         if match:
             return match.group(1)
     return None
+
+
+def _infer_source_platform(video_url: Optional[str], requested_platform: Optional[str] = None) -> str:
+    platform_hint = str(requested_platform or "").strip().lower()
+    if platform_hint in {"youtube", "instagram", "tiktok"}:
+        return platform_hint
+
+    text = str(video_url or "").strip().lower()
+    if "instagram.com" in text:
+        return "instagram"
+    if "tiktok.com" in text:
+        return "tiktok"
+    if "youtube.com" in text or "youtu.be" in text:
+        return "youtube"
+    return "youtube"
 
 
 def _median(values: List[float]) -> float:
@@ -718,8 +735,14 @@ def _build_platform_metrics(
     }
 
 
-async def _load_true_platform_metrics_for_video(user_id: str, video_url: Optional[str]) -> Dict[str, Any]:
+async def _load_true_platform_metrics_for_video(
+    user_id: str,
+    video_url: Optional[str],
+    platform: str = "youtube",
+) -> Dict[str, Any]:
     """Load latest persisted platform metrics for a specific user video URL."""
+    if platform != "youtube":
+        return {}
     video_id = _extract_youtube_video_id(video_url)
     if not video_id:
         return {}
@@ -766,8 +789,85 @@ async def _load_true_platform_metrics_for_video(user_id: str, video_url: Optiona
     }
 
 
-async def _collect_historical_performance(user_id: str, format_type: str) -> Dict[str, Any]:
+async def _collect_historical_performance(
+    user_id: str,
+    format_type: str,
+    platform: str = "youtube",
+) -> Dict[str, Any]:
     """Build user historical baseline from persisted posted-video metrics."""
+    if platform in {"instagram", "tiktok"}:
+        async with async_session_maker() as db:
+            result = await db.execute(
+                select(
+                    OutcomeMetric.actual_metrics_json,
+                    OutcomeMetric.actual_score,
+                    OutcomeMetric.retention_points_json,
+                )
+                .where(
+                    OutcomeMetric.user_id == user_id,
+                    OutcomeMetric.platform == platform,
+                )
+                .order_by(OutcomeMetric.created_at.desc())
+                .limit(120)
+            )
+            rows = result.all()
+
+        if not rows:
+            return {
+                "sample_size": 0,
+                "format_sample_size": 0,
+                "score": 0.0,
+                "confidence": "low",
+                "insufficient_data": True,
+                "summary": f"No historical {platform} posted metrics found yet.",
+                "signals": [],
+            }
+
+        weighted_rates: List[float] = []
+        actual_scores: List[float] = []
+        retention_coverage = 0
+        for row in rows:
+            metrics = row[0] if isinstance(row[0], dict) else {}
+            views = _safe_float(metrics.get("views"), 0.0)
+            likes = _safe_float(metrics.get("likes"), 0.0)
+            comments = _safe_float(metrics.get("comments"), 0.0)
+            shares = _safe_float(metrics.get("shares"), 0.0)
+            saves = _safe_float(metrics.get("saves"), 0.0)
+            weighted_rates.append((likes + (comments * 2.0) + (shares * 3.0) + (saves * 3.0)) / max(views, 1.0))
+            actual_scores.append(_safe_float(row[1], 0.0))
+            if isinstance(row[2], list) and row[2]:
+                retention_coverage += 1
+
+        sample_size = len(rows)
+        avg_weighted_rate = sum(weighted_rates) / max(sample_size, 1)
+        avg_actual_score = sum(actual_scores) / max(sample_size, 1)
+        retention_ratio = retention_coverage / max(sample_size, 1)
+        historical_score = _clamp(
+            (avg_actual_score * 0.75)
+            + min(avg_weighted_rate * 1200.0, 20.0)
+            + (retention_ratio * 5.0)
+        )
+        confidence = "high" if sample_size >= 20 else "medium" if sample_size >= 8 else "low"
+        insufficient_data = sample_size < 5
+        return {
+            "sample_size": sample_size,
+            "format_sample_size": sample_size,
+            "score": round(historical_score, 1),
+            "confidence": confidence,
+            "insufficient_data": insufficient_data,
+            "summary": (
+                f"Historical {platform} baseline calibrates prediction confidence from your posted outcomes."
+                if not insufficient_data
+                else f"Historical {platform} baseline has limited samples; confidence is reduced."
+            ),
+            "signals": [
+                f"Historical sample size: {sample_size} {platform} posts",
+                f"Average actual score: {round(avg_actual_score, 1)}",
+                f"Weighted engagement rate: {round(avg_weighted_rate, 4)}",
+                f"Retention-curve coverage: {round(retention_ratio * 100, 1)}%",
+            ],
+        }
+
     async with async_session_maker() as db:
         result = await db.execute(
             select(
@@ -784,7 +884,7 @@ async def _collect_historical_performance(user_id: str, format_type: str) -> Dic
             .join(Profile, Profile.id == Video.profile_id)
             .where(
                 Profile.user_id == user_id,
-                Video.platform == "youtube",
+                Video.platform == platform,
                 VideoMetrics.views > 0,
             )
             .order_by(VideoMetrics.fetched_at.desc())
@@ -867,12 +967,104 @@ async def _collect_historical_performance(user_id: str, format_type: str) -> Dic
     }
 
 
-async def _collect_competitor_benchmark(user_id: str, format_type: str) -> Dict[str, Any]:
+async def _collect_competitor_benchmark(
+    user_id: str,
+    format_type: str,
+    platform: str = "youtube",
+) -> Dict[str, Any]:
+    if platform in {"instagram", "tiktok"}:
+        async with async_session_maker() as db:
+            competitors_result = await db.execute(
+                select(Competitor).where(
+                    Competitor.user_id == user_id,
+                    Competitor.platform == platform,
+                )
+            )
+            competitors = competitors_result.scalars().all()
+            competitor_ids = {str(c.external_id) for c in competitors if c.external_id}
+            competitor_handles = {str(c.handle).lower() for c in competitors if c.handle}
+
+            items_result = await db.execute(
+                select(ResearchItem).where(
+                    ResearchItem.user_id == user_id,
+                    ResearchItem.platform == platform,
+                )
+            )
+            research_items = items_result.scalars().all()
+
+        samples: List[Dict[str, Any]] = []
+        for item in research_items:
+            metrics = item.metrics_json if isinstance(item.metrics_json, dict) else {}
+            views = _safe_int(metrics.get("views"), 0)
+            if views <= 0:
+                continue
+            creator_handle = str(item.creator_handle or "").strip().lower()
+            external_id = str(item.external_id or item.creator_handle or "").strip()
+            if competitor_ids or competitor_handles:
+                if external_id not in competitor_ids and creator_handle not in competitor_handles:
+                    continue
+            likes = _safe_int(metrics.get("likes"), 0)
+            comments = _safe_int(metrics.get("comments"), 0)
+            shares = _safe_int(metrics.get("shares"), 0)
+            saves = _safe_int(metrics.get("saves"), 0)
+            engagement_rate = (likes + (comments * 2.0) + (shares * 3.0) + (saves * 3.0)) / max(views, 1)
+            samples.append(
+                {
+                    "channel_id": external_id or creator_handle or "unknown",
+                    "format_type": format_type,
+                    "views": views,
+                    "like_rate": likes / max(views, 1),
+                    "comment_rate": comments / max(views, 1),
+                    "engagement_rate": engagement_rate,
+                }
+            )
+
+        if not samples:
+            return {
+                "has_data": False,
+                "sample_size": 0,
+                "competitor_count": len(competitors) if "competitors" in locals() else 0,
+                "avg_views": 0.0,
+                "avg_like_rate": 0.0,
+                "avg_comment_rate": 0.0,
+                "avg_engagement_rate": 0.0,
+                "difficulty_score": 55.0,
+                "used_format_filter": False,
+                "format_type": format_type,
+                "summary": f"No usable {platform} competitor research metrics found yet.",
+            }
+
+        avg_views = sum(s["views"] for s in samples) / len(samples)
+        avg_like_rate = sum(s["like_rate"] for s in samples) / len(samples)
+        avg_comment_rate = sum(s["comment_rate"] for s in samples) / len(samples)
+        avg_engagement_rate = sum(s["engagement_rate"] for s in samples) / len(samples)
+        difficulty_score = _clamp(
+            43.0
+            + min(avg_views / 18000.0, 22.0)
+            + min(avg_engagement_rate * 950.0, 20.0)
+            + min(avg_comment_rate * 2600.0, 10.0),
+            43.0,
+            95.0,
+        )
+        return {
+            "has_data": True,
+            "sample_size": len(samples),
+            "competitor_count": len({s["channel_id"] for s in samples}),
+            "avg_views": round(avg_views, 2),
+            "avg_like_rate": round(avg_like_rate, 4),
+            "avg_comment_rate": round(avg_comment_rate, 4),
+            "avg_engagement_rate": round(avg_engagement_rate, 4),
+            "difficulty_score": round(difficulty_score, 1),
+            "used_format_filter": False,
+            "format_type": format_type,
+            "summary": f"{platform.capitalize()} benchmark built from imported competitor research metadata.",
+        }
+
     async with async_session_maker() as db:
         result = await db.execute(
             select(Competitor).where(
                 Competitor.user_id == user_id,
-                Competitor.platform == "youtube",
+                Competitor.platform == platform,
             )
         )
         competitors = result.scalars().all()
@@ -1045,6 +1237,7 @@ async def _build_performance_prediction(
     detectors: Dict[str, Any],
     retention_points: List[Dict[str, Any]],
     platform_metrics: Dict[str, Any],
+    content_platform: str = "youtube",
 ) -> Dict[str, Any]:
     format_type = _infer_format(duration_seconds)
     platform_score = _build_platform_metrics(
@@ -1055,9 +1248,9 @@ async def _build_performance_prediction(
         format_type=format_type,
     )
     next_actions = _build_next_actions(platform_score.get("detector_rankings", []))
-    benchmark = await _collect_competitor_benchmark(user_id, format_type)
+    benchmark = await _collect_competitor_benchmark(user_id, format_type, platform=content_platform)
     competitor_metrics = _build_competitor_metrics(platform_score["score"], benchmark)
-    historical_metrics = await _collect_historical_performance(user_id, format_type)
+    historical_metrics = await _collect_historical_performance(user_id, format_type, platform=content_platform)
 
     has_historical = not historical_metrics.get("insufficient_data", True)
     if has_historical:
@@ -1093,6 +1286,7 @@ async def _build_performance_prediction(
         insufficient_data_reasons.append("Historical posted-video sample is below 5 format-matched videos.")
 
     return {
+        "platform": content_platform,
         "format_type": format_type,
         "duration_seconds": duration_seconds,
         "competitor_metrics": competitor_metrics,
@@ -1183,11 +1377,16 @@ async def process_video_audit(
             result = await asyncio.to_thread(analyze_content, frames, transcript, metadata, api_key)
             video_analysis = result.model_dump()
             input_payload = audit.input_json if isinstance(audit.input_json, dict) else {}
+            content_platform = _infer_source_platform(
+                video_url if source_mode == "url" else None,
+                requested_platform=input_payload.get("platform"),
+            )
             retention_points = input_payload.get("retention_points", []) or []
             platform_metrics_input = input_payload.get("platform_metrics", {}) or {}
             persisted_true_metrics = await _load_true_platform_metrics_for_video(
                 audit.user_id,
                 video_url if source_mode == "url" else None,
+                platform=content_platform,
             )
             if persisted_true_metrics:
                 logger.info(
@@ -1212,6 +1411,7 @@ async def process_video_audit(
                 detectors=explicit_detectors,
                 retention_points=retention_points,
                 platform_metrics=platform_metrics_input,
+                content_platform=content_platform,
             )
             detector_rankings = (
                 performance_prediction.get("platform_metrics", {}).get("detector_rankings", [])

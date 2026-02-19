@@ -150,6 +150,9 @@ async def _ensure_default_collection(user_id: str, db: AsyncSession) -> Research
 def _canonical_item_payload(item: ResearchItem) -> Dict[str, Any]:
     metrics = item.metrics_json if isinstance(item.metrics_json, dict) else {}
     media_meta = item.media_meta_json if isinstance(item.media_meta_json, dict) else {}
+    tags = media_meta.get("tags") if isinstance(media_meta.get("tags"), list) else []
+    pinned = bool(media_meta.get("pinned", False))
+    archived = bool(media_meta.get("archived", False))
     return {
         "item_id": item.id,
         "platform": item.platform,
@@ -168,6 +171,9 @@ def _canonical_item_payload(item: ResearchItem) -> Dict[str, Any]:
             "saves": _safe_int(metrics.get("saves"), 0),
         },
         "media_meta": media_meta,
+        "tags": [str(tag).strip() for tag in tags if str(tag).strip()],
+        "pinned": pinned,
+        "archived": archived,
         "published_at": item.published_at.isoformat() if item.published_at else None,
         "created_at": item.created_at.isoformat() if item.created_at else None,
         "collection_id": item.collection_id,
@@ -426,6 +432,46 @@ async def search_research_items_service(
         select(ResearchItem).where(ResearchItem.user_id == user_id)
     )
     items = result.scalars().all()
+    include_archived = bool(payload.get("include_archived", False))
+    pinned_only = bool(payload.get("pinned_only", False))
+    collection_id = _normalize_text(payload.get("collection_id")) or None
+    tags_filter_raw = payload.get("tags")
+    tags_filter: List[str] = []
+    if isinstance(tags_filter_raw, list):
+        tags_filter = [str(tag).strip().lower() for tag in tags_filter_raw if str(tag).strip()]
+    elif isinstance(tags_filter_raw, str) and tags_filter_raw.strip():
+        tags_filter = [part.strip().lower() for part in tags_filter_raw.split(",") if part.strip()]
+
+    if collection_id:
+        items = [item for item in items if item.collection_id == collection_id]
+
+    if not include_archived:
+        non_archived: List[ResearchItem] = []
+        for item in items:
+            media_meta = item.media_meta_json if isinstance(item.media_meta_json, dict) else {}
+            if bool(media_meta.get("archived", False)):
+                continue
+            non_archived.append(item)
+        items = non_archived
+
+    if pinned_only:
+        pinned_items: List[ResearchItem] = []
+        for item in items:
+            media_meta = item.media_meta_json if isinstance(item.media_meta_json, dict) else {}
+            if bool(media_meta.get("pinned", False)):
+                pinned_items.append(item)
+        items = pinned_items
+
+    if tags_filter:
+        filtered_by_tags: List[ResearchItem] = []
+        for item in items:
+            media_meta = item.media_meta_json if isinstance(item.media_meta_json, dict) else {}
+            tags = media_meta.get("tags") if isinstance(media_meta.get("tags"), list) else []
+            normalized_tags = {str(tag).strip().lower() for tag in tags if str(tag).strip()}
+            if any(tag in normalized_tags for tag in tags_filter):
+                filtered_by_tags.append(item)
+        items = filtered_by_tags
+
     platform = _normalize_text(payload.get("platform")).lower()
     if platform in ALLOWED_RESEARCH_PLATFORMS:
         items = [item for item in items if item.platform == platform]
@@ -455,13 +501,17 @@ async def search_research_items_service(
     has_more = end < len(sorted_items)
 
     logger.info(
-        "research_search_run user=%s platform=%s query=%s page=%s limit=%s total=%s",
+        "research_search_run user=%s platform=%s query=%s page=%s limit=%s total=%s collection=%s pinned_only=%s tags=%s include_archived=%s",
         user_id,
         platform or "all",
         query,
         page,
         limit,
         len(sorted_items),
+        collection_id or "all",
+        pinned_only,
+        tags_filter,
+        include_archived,
     )
     return {
         "page": page,
@@ -489,6 +539,130 @@ async def list_research_collections_service(user_id: str, db: AsyncSession) -> L
         }
         for row in rows
     ]
+
+
+async def create_research_collection_service(
+    *,
+    user_id: str,
+    payload: Dict[str, Any],
+    db: AsyncSession,
+) -> Dict[str, Any]:
+    _assert_research_enabled()
+    name = _normalize_text(payload.get("name"))
+    if len(name) < 2:
+        raise HTTPException(status_code=422, detail="name must be at least 2 characters")
+    platform = _normalize_text(payload.get("platform")).lower() or "mixed"
+    if platform not in {"mixed", *ALLOWED_RESEARCH_PLATFORMS}:
+        raise HTTPException(status_code=422, detail="platform must be mixed, youtube, instagram, or tiktok")
+    description = _normalize_text(payload.get("description")) or None
+
+    existing = await db.execute(
+        select(ResearchCollection).where(
+            ResearchCollection.user_id == user_id,
+            ResearchCollection.name == name,
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Collection name already exists")
+
+    collection = ResearchCollection(
+        id=str(uuid.uuid4()),
+        user_id=user_id,
+        name=name,
+        platform=platform,
+        description=description,
+        is_system=False,
+    )
+    db.add(collection)
+    await db.commit()
+    await db.refresh(collection)
+    return {
+        "id": collection.id,
+        "name": collection.name,
+        "platform": collection.platform,
+        "description": collection.description,
+        "is_system": bool(collection.is_system),
+        "created_at": collection.created_at.isoformat() if collection.created_at else None,
+    }
+
+
+async def move_research_item_service(
+    *,
+    user_id: str,
+    item_id: str,
+    collection_id: str,
+    db: AsyncSession,
+) -> Dict[str, Any]:
+    _assert_research_enabled()
+    collection_result = await db.execute(
+        select(ResearchCollection).where(
+            ResearchCollection.id == collection_id,
+            ResearchCollection.user_id == user_id,
+        )
+    )
+    collection = collection_result.scalar_one_or_none()
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    item_result = await db.execute(
+        select(ResearchItem).where(
+            ResearchItem.id == item_id,
+            ResearchItem.user_id == user_id,
+        )
+    )
+    item = item_result.scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Research item not found")
+
+    item.collection_id = collection.id
+    await db.commit()
+    await db.refresh(item)
+    return _canonical_item_payload(item)
+
+
+async def update_research_item_meta_service(
+    *,
+    user_id: str,
+    item_id: str,
+    payload: Dict[str, Any],
+    db: AsyncSession,
+) -> Dict[str, Any]:
+    _assert_research_enabled()
+    item_result = await db.execute(
+        select(ResearchItem).where(
+            ResearchItem.id == item_id,
+            ResearchItem.user_id == user_id,
+        )
+    )
+    item = item_result.scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Research item not found")
+
+    media_meta = item.media_meta_json if isinstance(item.media_meta_json, dict) else {}
+    next_meta = {**media_meta}
+
+    if payload.get("tags") is not None:
+        raw_tags = payload.get("tags")
+        if not isinstance(raw_tags, list):
+            raise HTTPException(status_code=422, detail="tags must be an array of strings")
+        tags: List[str] = []
+        for tag in raw_tags[:20]:
+            value = str(tag).strip()
+            if not value:
+                continue
+            tags.append(value[:40])
+        next_meta["tags"] = tags
+
+    if payload.get("pinned") is not None:
+        next_meta["pinned"] = bool(payload.get("pinned"))
+
+    if payload.get("archived") is not None:
+        next_meta["archived"] = bool(payload.get("archived"))
+
+    item.media_meta_json = next_meta
+    await db.commit()
+    await db.refresh(item)
+    return _canonical_item_payload(item)
 
 
 async def get_research_item_service(user_id: str, item_id: str, db: AsyncSession) -> Dict[str, Any]:

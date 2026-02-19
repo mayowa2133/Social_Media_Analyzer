@@ -14,7 +14,11 @@ from database import get_db
 from models.user import User
 from routers.auth_scope import AuthContext, ensure_user_scope, get_auth_context
 from routers.rate_limit import rate_limit
-from services.outcomes import get_outcomes_summary_service, ingest_outcome_service
+from services.outcomes import (
+    get_outcomes_summary_service,
+    ingest_outcome_service,
+    run_calibration_refresh_for_all_users_service,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -81,3 +85,15 @@ async def outcomes_summary(
         db=db,
         platform=platform,
     )
+
+
+@router.post("/recalibrate")
+async def recalibrate_outcomes(
+    _rate_limit: None = Depends(rate_limit("outcomes_recalibrate", limit=12, window_seconds=3600)),
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    # Requires authenticated session but does not trust user input.
+    if not auth.user_id:
+        return {"refreshed": 0, "skipped": 0, "errors": ["unauthorized"]}
+    return await run_calibration_refresh_for_all_users_service(db=db)

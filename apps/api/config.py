@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     RESEARCH_ENABLED: bool = True
     OPTIMIZER_V2_ENABLED: bool = True
     OUTCOME_LEARNING_ENABLED: bool = True
+    OUTCOME_RECALIBRATE_INTERVAL_MINUTES: int = 60
     BILLING_ENABLED: bool = False
     ALLOW_EXTERNAL_MEDIA_DOWNLOAD: bool = False
     FREE_MONTHLY_CREDITS: int = 10

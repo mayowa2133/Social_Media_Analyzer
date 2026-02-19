@@ -2,7 +2,13 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { getConsolidatedReport, ConsolidatedReport } from "@/lib/api";
+import {
+    ConsolidatedReport,
+    getConsolidatedReport,
+    getOutcomesSummary,
+    ingestOutcomeMetrics,
+    recalibrateOutcomes,
+} from "@/lib/api";
 import { ReportScorecard } from "@/components/ReportScorecard";
 import { BlueprintDisplay } from "@/components/blueprint-display";
 
@@ -10,6 +16,20 @@ export default function ReportPage({ params }: { params: { id: string } }) {
     const [report, setReport] = useState<ConsolidatedReport | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [postingOutcome, setPostingOutcome] = useState(false);
+    const [outcomeNotice, setOutcomeNotice] = useState<string | null>(null);
+    const [outcomeError, setOutcomeError] = useState<string | null>(null);
+    const [recalibrating, setRecalibrating] = useState(false);
+    const [outcomeForm, setOutcomeForm] = useState({
+        platform: "youtube",
+        views: "",
+        likes: "",
+        comments: "",
+        shares: "",
+        saves: "",
+        avg_view_duration_s: "",
+        posted_at: new Date().toISOString().slice(0, 16),
+    });
 
     useEffect(() => {
         const id = params.id === "latest" ? undefined : params.id;
@@ -44,6 +64,57 @@ export default function ReportPage({ params }: { params: { id: string } }) {
         prediction.platform_metrics &&
         prediction.combined_metrics
     );
+
+    async function handlePostOutcome(e: React.FormEvent) {
+        e.preventDefault();
+        if (!report) {
+            return;
+        }
+        setPostingOutcome(true);
+        setOutcomeError(null);
+        setOutcomeNotice(null);
+        try {
+            const postedAt = outcomeForm.posted_at
+                ? new Date(outcomeForm.posted_at).toISOString()
+                : new Date().toISOString();
+            const response = await ingestOutcomeMetrics({
+                platform: outcomeForm.platform as "youtube" | "instagram" | "tiktok",
+                actual_metrics: {
+                    views: Number(outcomeForm.views || 0),
+                    likes: Number(outcomeForm.likes || 0),
+                    comments: Number(outcomeForm.comments || 0),
+                    shares: Number(outcomeForm.shares || 0),
+                    saves: Number(outcomeForm.saves || 0),
+                    avg_view_duration_s: Number(outcomeForm.avg_view_duration_s || 0),
+                },
+                posted_at: postedAt,
+                predicted_score: report.performance_prediction?.combined_metrics?.score,
+                draft_snapshot_id: report.best_edited_variant?.id || undefined,
+                report_id: report.audit_id,
+            });
+            const summary = await getOutcomesSummary({ platform: outcomeForm.platform as "youtube" | "instagram" | "tiktok" });
+            setOutcomeNotice(
+                `Saved. Calibration delta ${response.calibration_delta ?? "n/a"} • Confidence ${summary.confidence || "low"}`
+            );
+        } catch (err: any) {
+            setOutcomeError(err.message || "Could not save outcome");
+        } finally {
+            setPostingOutcome(false);
+        }
+    }
+
+    async function handleRecalibrate() {
+        setRecalibrating(true);
+        setOutcomeError(null);
+        try {
+            const result = await recalibrateOutcomes();
+            setOutcomeNotice(`Recalibrated ${result.refreshed} user/platform snapshots.`);
+        } catch (err: any) {
+            setOutcomeError(err.message || "Recalibration failed");
+        } finally {
+            setRecalibrating(false);
+        }
+    }
 
     return (
         <div className="min-h-screen bg-[#e8e8e8] px-3 py-4 md:px-8 md:py-6">
@@ -126,6 +197,47 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                         </section>
                     )}
 
+                    <section className="mb-10 rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                            <h2 className="text-lg font-bold text-[#1f1f1f]">Post Result (Outcomes Learning)</h2>
+                            <button
+                                type="button"
+                                onClick={() => void handleRecalibrate()}
+                                disabled={recalibrating}
+                                className="rounded-lg border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-1 text-xs text-[#555] hover:bg-[#efefef] disabled:opacity-50"
+                            >
+                                {recalibrating ? "Recalibrating..." : "Run Recalibration"}
+                            </button>
+                        </div>
+                        <form onSubmit={handlePostOutcome} className="grid gap-2 md:grid-cols-4">
+                            <select
+                                value={outcomeForm.platform}
+                                onChange={(e) => setOutcomeForm((prev) => ({ ...prev, platform: e.target.value }))}
+                                className="rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                            >
+                                <option value="youtube">YouTube</option>
+                                <option value="instagram">Instagram</option>
+                                <option value="tiktok">TikTok</option>
+                            </select>
+                            <input value={outcomeForm.views} onChange={(e) => setOutcomeForm((p) => ({ ...p, views: e.target.value }))} placeholder="views" className="rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222]" />
+                            <input value={outcomeForm.likes} onChange={(e) => setOutcomeForm((p) => ({ ...p, likes: e.target.value }))} placeholder="likes" className="rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222]" />
+                            <input value={outcomeForm.comments} onChange={(e) => setOutcomeForm((p) => ({ ...p, comments: e.target.value }))} placeholder="comments" className="rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222]" />
+                            <input value={outcomeForm.shares} onChange={(e) => setOutcomeForm((p) => ({ ...p, shares: e.target.value }))} placeholder="shares" className="rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222]" />
+                            <input value={outcomeForm.saves} onChange={(e) => setOutcomeForm((p) => ({ ...p, saves: e.target.value }))} placeholder="saves" className="rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222]" />
+                            <input value={outcomeForm.avg_view_duration_s} onChange={(e) => setOutcomeForm((p) => ({ ...p, avg_view_duration_s: e.target.value }))} placeholder="avg view duration s" className="rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222]" />
+                            <input type="datetime-local" value={outcomeForm.posted_at} onChange={(e) => setOutcomeForm((p) => ({ ...p, posted_at: e.target.value }))} className="rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222]" />
+                            <button
+                                type="submit"
+                                disabled={postingOutcome}
+                                className="rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-xs text-[#2f2f2f] hover:bg-[#efefef] disabled:opacity-50"
+                            >
+                                {postingOutcome ? "Saving..." : "Save Post Result"}
+                            </button>
+                        </form>
+                        {outcomeNotice && <p className="mt-2 text-xs text-[#2f6b39]">{outcomeNotice}</p>}
+                        {outcomeError && <p className="mt-2 text-xs text-[#7f3a3a]">{outcomeError}</p>}
+                    </section>
+
                     {report.best_edited_variant && (
                         <section className="mb-10 rounded-2xl border border-[#dcdcdc] bg-white p-4">
                             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -153,6 +265,12 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                                     ))}
                                 </ul>
                             )}
+                            <Link
+                                href={`/research?mode=optimizer&source_item_id=${encodeURIComponent(report.best_edited_variant.source_item_id || "")}&topic=${encodeURIComponent(report.best_edited_variant.script_preview.slice(0, 100))}&source_context=${encodeURIComponent("report_refinement")}`}
+                                className="mt-3 inline-flex rounded-lg border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-xs text-[#2f2f2f] hover:bg-[#efefef]"
+                            >
+                                Generate Improved A/B/C From This Draft
+                            </Link>
                         </section>
                     )}
 

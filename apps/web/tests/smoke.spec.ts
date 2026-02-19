@@ -316,6 +316,7 @@ async function installApiMocks(page: Page) {
                     id: "comp-1",
                     channel_id: "UC_COMP_1",
                     title: "Mock Competitor Channel",
+                    platform: "youtube",
                     custom_url: "@mockcompetitor",
                     subscriber_count: 12345,
                     video_count: 100,
@@ -333,6 +334,7 @@ async function installApiMocks(page: Page) {
                 id: "comp-1",
                 channel_id: "UC_COMP_1",
                 title: "Mock Competitor Channel",
+                platform: "youtube",
                 custom_url: "@mockcompetitor",
                 subscriber_count: 12345,
                 video_count: 100,
@@ -723,7 +725,7 @@ test("connect -> competitors -> audit -> report smoke flow", async ({ page }) =>
 
     await page.goto("/competitors");
     await page.getByPlaceholder("Paste YouTube channel URL or @handle...").fill("https://www.youtube.com/@mockcompetitor");
-    await page.getByRole("button", { name: "Add" }).click();
+    await page.getByRole("button", { name: /Add/ }).click();
     await expect(page.getByText("Mock Competitor Channel")).toBeVisible();
 
     await page.goto("/audit/new");

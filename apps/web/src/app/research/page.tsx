@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
+    captureResearchItem,
+    createResearchCollection,
     createDraftSnapshot,
     DraftSnapshot,
     exportResearchCollection,
@@ -10,11 +12,14 @@ import {
     getApiBaseUrl,
     getCreditSummary,
     getCurrentUserId,
+    getOutcomesSummary,
     getResearchItem,
+    ingestOutcomeMetrics,
     importResearchCsv,
     importResearchUrl,
     listDraftSnapshots,
     listResearchCollections,
+    moveResearchItem,
     OptimizerRescoreResponse,
     ResearchCollection,
     ResearchItem,
@@ -22,6 +27,7 @@ import {
     ScriptVariantResult,
     searchResearchItems,
     syncYouTubeSession,
+    updateResearchItemMeta,
 } from "@/lib/api";
 import { useSession } from "next-auth/react";
 
@@ -51,10 +57,17 @@ export default function ResearchPage() {
     const [importingUrl, setImportingUrl] = useState(false);
     const [csvFile, setCsvFile] = useState<File | null>(null);
     const [importingCsv, setImportingCsv] = useState(false);
+    const [captureUrlValue, setCaptureUrlValue] = useState("");
+    const [captureTitleValue, setCaptureTitleValue] = useState("");
+    const [captureViewsValue, setCaptureViewsValue] = useState("");
 
     const [searchPlatform, setSearchPlatform] = useState<"" | "youtube" | "instagram" | "tiktok">("");
     const [searchQuery, setSearchQuery] = useState("");
     const [searchTimeframe, setSearchTimeframe] = useState<"24h" | "7d" | "30d" | "90d" | "all">("all");
+    const [searchCollectionId, setSearchCollectionId] = useState<string>("");
+    const [searchTags, setSearchTags] = useState<string>("");
+    const [includeArchived, setIncludeArchived] = useState(false);
+    const [pinnedOnly, setPinnedOnly] = useState(false);
     const [searchSortBy, setSearchSortBy] = useState<"created_at" | "posted_at" | "views" | "likes" | "comments" | "shares" | "saves">("created_at");
     const [searchDirection, setSearchDirection] = useState<"asc" | "desc">("desc");
     const [searchPage, setSearchPage] = useState(1);
@@ -69,6 +82,9 @@ export default function ResearchPage() {
 
     const [collections, setCollections] = useState<ResearchCollection[]>([]);
     const [loadingCollections, setLoadingCollections] = useState(false);
+    const [newCollectionName, setNewCollectionName] = useState("");
+    const [newCollectionPlatform, setNewCollectionPlatform] = useState<"mixed" | "youtube" | "instagram" | "tiktok">("mixed");
+    const [creatingCollection, setCreatingCollection] = useState(false);
 
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
@@ -78,6 +94,9 @@ export default function ResearchPage() {
     const [scriptObjective, setScriptObjective] = useState("higher retention and more shares");
     const [scriptTone, setScriptTone] = useState("bold");
     const [scriptDuration, setScriptDuration] = useState<number>(45);
+    const [scriptHookStyle, setScriptHookStyle] = useState("outcome_proof");
+    const [scriptCtaStyle, setScriptCtaStyle] = useState("comment_prompt");
+    const [scriptPacingDensity, setScriptPacingDensity] = useState("dense");
 
     const [generatingVariants, setGeneratingVariants] = useState(false);
     const [variantError, setVariantError] = useState<string | null>(null);
@@ -104,6 +123,17 @@ export default function ResearchPage() {
     const [loadingDraftHistory, setLoadingDraftHistory] = useState(false);
 
     const [creditsBalance, setCreditsBalance] = useState<number>(0);
+    const [capturingItem, setCapturingItem] = useState(false);
+    const [outcomeMetricsInput, setOutcomeMetricsInput] = useState({
+        views: "",
+        likes: "",
+        comments: "",
+        shares: "",
+        saves: "",
+        avg_view_duration_s: "",
+    });
+    const [postingOutcome, setPostingOutcome] = useState(false);
+    const [outcomeMessage, setOutcomeMessage] = useState<string | null>(null);
 
     const selectedItems = useMemo(() => {
         const selectedSet = new Set(selectedIds);
@@ -175,6 +205,13 @@ export default function ResearchPage() {
             const response = await searchResearchItems({
                 platform: searchPlatform || undefined,
                 query: searchQuery,
+                collection_id: searchCollectionId || undefined,
+                include_archived: includeArchived,
+                pinned_only: pinnedOnly,
+                tags: searchTags
+                    .split(",")
+                    .map((tag) => tag.trim())
+                    .filter(Boolean),
                 sort_by: searchSortBy,
                 sort_direction: searchDirection,
                 timeframe: searchTimeframe,
@@ -292,6 +329,32 @@ export default function ResearchPage() {
         }
     }
 
+    async function handleCaptureForm(e: React.FormEvent) {
+        e.preventDefault();
+        if (!captureUrlValue.trim()) {
+            return;
+        }
+        setCapturingItem(true);
+        setSearchError(null);
+        try {
+            await resolveUserId();
+            await captureResearchItem({
+                platform: importPlatform,
+                url: captureUrlValue.trim(),
+                title: captureTitleValue.trim() || undefined,
+                views: Number(captureViewsValue || 0),
+            });
+            setCaptureUrlValue("");
+            setCaptureTitleValue("");
+            setCaptureViewsValue("");
+            await Promise.all([runSearch(1), refreshCollections()]);
+        } catch (err: any) {
+            setSearchError(err.message || "Capture failed");
+        } finally {
+            setCapturingItem(false);
+        }
+    }
+
     async function handleExport(collectionId: string, format: "csv" | "json") {
         try {
             await resolveUserId();
@@ -300,6 +363,83 @@ export default function ResearchPage() {
             window.open(link, "_blank", "noopener,noreferrer");
         } catch (err: any) {
             setSearchError(err.message || "Export failed");
+        }
+    }
+
+    async function handleCreateCollection(e: React.FormEvent) {
+        e.preventDefault();
+        if (!newCollectionName.trim()) {
+            return;
+        }
+        setCreatingCollection(true);
+        try {
+            await resolveUserId();
+            await createResearchCollection({
+                name: newCollectionName.trim(),
+                platform: newCollectionPlatform,
+            });
+            setNewCollectionName("");
+            await refreshCollections();
+        } catch (err: any) {
+            setSearchError(err.message || "Could not create collection");
+        } finally {
+            setCreatingCollection(false);
+        }
+    }
+
+    async function handleQuickCapture(item: ResearchItem) {
+        setCapturingItem(true);
+        try {
+            await resolveUserId();
+            await captureResearchItem({
+                platform: item.platform,
+                url: item.url || undefined,
+                external_id: item.external_id || undefined,
+                creator_handle: item.creator_handle || undefined,
+                creator_display_name: item.creator_display_name || undefined,
+                title: item.title || undefined,
+                caption: item.caption || undefined,
+                views: item.metrics.views,
+                likes: item.metrics.likes,
+                comments: item.metrics.comments,
+                shares: item.metrics.shares,
+                saves: item.metrics.saves,
+                media_meta: item.media_meta,
+                published_at: item.published_at || undefined,
+            });
+            await Promise.all([runSearch(1), refreshCollections()]);
+        } catch (err: any) {
+            setSearchError(err.message || "Capture failed");
+        } finally {
+            setCapturingItem(false);
+        }
+    }
+
+    async function handleMoveItem(itemId: string, collectionId: string) {
+        try {
+            await resolveUserId();
+            await moveResearchItem({ itemId, collectionId });
+            await runSearch(searchPage);
+        } catch (err: any) {
+            setSearchError(err.message || "Move failed");
+        }
+    }
+
+    async function handleUpdateItemMeta(
+        itemId: string,
+        update: { pinned?: boolean; archived?: boolean; tags?: string[] }
+    ) {
+        try {
+            await resolveUserId();
+            await updateResearchItemMeta({
+                itemId,
+                pinned: update.pinned,
+                archived: update.archived,
+                tags: update.tags,
+            });
+            await runSearch(searchPage);
+        } catch (err: any) {
+            setSearchError(err.message || "Item update failed");
         }
     }
 
@@ -340,6 +480,9 @@ export default function ResearchPage() {
                     platform: scriptPlatform,
                     duration_s: scriptDuration,
                     tone: scriptTone,
+                    hook_style: scriptHookStyle,
+                    cta_style: scriptCtaStyle,
+                    pacing_density: scriptPacingDensity,
                 },
             });
             setVariants(response.variants || []);
@@ -459,6 +602,41 @@ export default function ResearchPage() {
         setRescoreError(null);
     }
 
+    async function handlePostOutcomeFromResearch() {
+        const latestSnapshot = draftHistory[0];
+        if (!latestSnapshot) {
+            setOutcomeMessage("Save an iteration first.");
+            return;
+        }
+        setPostingOutcome(true);
+        setOutcomeMessage(null);
+        try {
+            await resolveUserId();
+            const response = await ingestOutcomeMetrics({
+                platform: scriptPlatform,
+                draft_snapshot_id: latestSnapshot.id,
+                actual_metrics: {
+                    views: Number(outcomeMetricsInput.views || 0),
+                    likes: Number(outcomeMetricsInput.likes || 0),
+                    comments: Number(outcomeMetricsInput.comments || 0),
+                    shares: Number(outcomeMetricsInput.shares || 0),
+                    saves: Number(outcomeMetricsInput.saves || 0),
+                    avg_view_duration_s: Number(outcomeMetricsInput.avg_view_duration_s || 0),
+                },
+                posted_at: new Date().toISOString(),
+                predicted_score: latestSnapshot.rescored_score,
+            });
+            const summary = await getOutcomesSummary({ platform: scriptPlatform });
+            setOutcomeMessage(
+                `Outcome saved. Delta ${response.calibration_delta ?? "n/a"} • Confidence ${summary.confidence || "low"}`
+            );
+        } catch (err: any) {
+            setOutcomeMessage(err.message || "Failed to save outcome");
+        } finally {
+            setPostingOutcome(false);
+        }
+    }
+
     return (
         <div className="min-h-screen bg-[#e8e8e8] px-3 py-4 md:px-8 md:py-6">
             <div className="mx-auto w-full max-w-[1500px] overflow-hidden rounded-[30px] border border-[#d8d8d8] bg-[#f5f5f5] shadow-[0_35px_90px_rgba(0,0,0,0.12)]">
@@ -520,6 +698,33 @@ export default function ResearchPage() {
                                     {importingCsv ? "Importing..." : "Import CSV"}
                                 </button>
                             </form>
+                            <form onSubmit={handleCaptureForm} className="mt-3 space-y-2">
+                                <input
+                                    value={captureUrlValue}
+                                    onChange={(e) => setCaptureUrlValue(e.target.value)}
+                                    placeholder="Browser-captured URL"
+                                    className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-xs text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                />
+                                <input
+                                    value={captureTitleValue}
+                                    onChange={(e) => setCaptureTitleValue(e.target.value)}
+                                    placeholder="Optional title"
+                                    className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-xs text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                />
+                                <input
+                                    value={captureViewsValue}
+                                    onChange={(e) => setCaptureViewsValue(e.target.value)}
+                                    placeholder="Optional views"
+                                    className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-xs text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                />
+                                <button
+                                    type="submit"
+                                    disabled={capturingItem || !captureUrlValue.trim()}
+                                    className="w-full rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-sm text-[#2f2f2f] hover:bg-[#efefef] disabled:opacity-50"
+                                >
+                                    {capturingItem ? "Capturing..." : "Capture Item"}
+                                </button>
+                            </form>
                         </div>
 
                         <div className="mt-4 rounded-2xl border border-[#dcdcdc] bg-white p-4">
@@ -541,6 +746,24 @@ export default function ResearchPage() {
                                     <option value="instagram">Instagram</option>
                                     <option value="tiktok">TikTok</option>
                                 </select>
+                                <select
+                                    value={searchCollectionId}
+                                    onChange={(e) => setSearchCollectionId(e.target.value)}
+                                    className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                >
+                                    <option value="">All Collections</option>
+                                    {collections.map((collection) => (
+                                        <option key={collection.id} value={collection.id}>
+                                            {collection.name}
+                                        </option>
+                                    ))}
+                                </select>
+                                <input
+                                    value={searchTags}
+                                    onChange={(e) => setSearchTags(e.target.value)}
+                                    placeholder="Tags (comma separated)"
+                                    className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-xs text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                />
                                 <div className="grid grid-cols-2 gap-2">
                                     <select
                                         value={searchTimeframe}
@@ -586,6 +809,22 @@ export default function ResearchPage() {
                                         className={`rounded-lg border px-2 py-2 text-xs ${searchDirection === "asc" ? "border-[#b9b9b9] bg-white text-[#222]" : "border-[#dedede] bg-[#f6f6f6] text-[#555]"}`}
                                     >
                                         Low to High
+                                    </button>
+                                </div>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setPinnedOnly((prev) => !prev)}
+                                        className={`rounded-lg border px-2 py-2 text-xs ${pinnedOnly ? "border-[#b9b9b9] bg-white text-[#222]" : "border-[#dedede] bg-[#f6f6f6] text-[#555]"}`}
+                                    >
+                                        {pinnedOnly ? "Pinned only" : "All pinned states"}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setIncludeArchived((prev) => !prev)}
+                                        className={`rounded-lg border px-2 py-2 text-xs ${includeArchived ? "border-[#b9b9b9] bg-white text-[#222]" : "border-[#dedede] bg-[#f6f6f6] text-[#555]"}`}
+                                    >
+                                        {includeArchived ? "Including archived" : "Hide archived"}
                                     </button>
                                 </div>
                                 <button
@@ -679,6 +918,14 @@ export default function ResearchPage() {
                                                     >
                                                         Use in Script Studio
                                                     </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => void handleQuickCapture(item)}
+                                                        disabled={capturingItem}
+                                                        className="rounded-lg border border-[#d9d9d9] bg-white px-2 py-1 text-[11px] text-[#555]"
+                                                    >
+                                                        Capture
+                                                    </button>
                                                 </div>
                                             </div>
                                             <div className="grid gap-2 text-xs text-[#666] sm:grid-cols-5">
@@ -687,6 +934,53 @@ export default function ResearchPage() {
                                                 <p>Comments: {formatNumber(item.metrics.comments)}</p>
                                                 <p>Shares: {formatNumber(item.metrics.shares)}</p>
                                                 <p>Saves: {formatNumber(item.metrics.saves)}</p>
+                                            </div>
+                                            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                                <select
+                                                    value={item.collection_id || ""}
+                                                    onChange={(e) => {
+                                                        if (!e.target.value) return;
+                                                        void handleMoveItem(item.item_id, e.target.value);
+                                                    }}
+                                                    className="rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-1 text-[11px] text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                                >
+                                                    <option value="">Move to collection...</option>
+                                                    {collections.map((collection) => (
+                                                        <option key={collection.id} value={collection.id}>
+                                                            {collection.name}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                                <div className="flex items-center gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => void handleUpdateItemMeta(item.item_id, { pinned: !item.pinned })}
+                                                        className="rounded-lg border border-[#d9d9d9] bg-white px-2 py-1 text-[11px] text-[#555]"
+                                                    >
+                                                        {item.pinned ? "Unpin" : "Pin"}
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => void handleUpdateItemMeta(item.item_id, { archived: !item.archived })}
+                                                        className="rounded-lg border border-[#d9d9d9] bg-white px-2 py-1 text-[11px] text-[#555]"
+                                                    >
+                                                        {item.archived ? "Unarchive" : "Archive"}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <div className="mt-2">
+                                                <input
+                                                    defaultValue={(item.tags || []).join(", ")}
+                                                    onBlur={(e) => {
+                                                        const tags = e.target.value
+                                                            .split(",")
+                                                            .map((tag) => tag.trim())
+                                                            .filter(Boolean);
+                                                        void handleUpdateItemMeta(item.item_id, { tags });
+                                                    }}
+                                                    placeholder="tags, separated, by commas"
+                                                    className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-1 text-[11px] text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                                />
                                             </div>
                                         </div>
                                     );
@@ -842,6 +1136,35 @@ export default function ResearchPage() {
                                     <option value="expert">Expert</option>
                                     <option value="conversational">Conversational</option>
                                 </select>
+                                <div className="grid grid-cols-1 gap-2">
+                                    <select
+                                        value={scriptHookStyle}
+                                        onChange={(e) => setScriptHookStyle(e.target.value)}
+                                        className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                    >
+                                        <option value="outcome_proof">Hook: Outcome + Proof</option>
+                                        <option value="curiosity_gap">Hook: Curiosity Gap</option>
+                                        <option value="contrarian_take">Hook: Contrarian</option>
+                                    </select>
+                                    <select
+                                        value={scriptCtaStyle}
+                                        onChange={(e) => setScriptCtaStyle(e.target.value)}
+                                        className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                    >
+                                        <option value="comment_prompt">CTA: Comment Prompt</option>
+                                        <option value="save_share">CTA: Save/Share</option>
+                                        <option value="follow_subscribe">CTA: Follow/Subscribe</option>
+                                    </select>
+                                    <select
+                                        value={scriptPacingDensity}
+                                        onChange={(e) => setScriptPacingDensity(e.target.value)}
+                                        className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                    >
+                                        <option value="dense">Pacing: Dense</option>
+                                        <option value="balanced">Pacing: Balanced</option>
+                                        <option value="slow_clear">Pacing: Slow + Clear</option>
+                                    </select>
+                                </div>
                                 <button
                                     type="submit"
                                     disabled={generatingVariants}
@@ -1006,6 +1329,91 @@ export default function ResearchPage() {
                                     </div>
                                 )}
                             </div>
+
+                            <div className="mt-4 rounded-xl border border-[#dfdfdf] bg-[#fafafa] p-3">
+                                <p className="text-xs font-semibold text-[#222]">Post Result From Latest Iteration</p>
+                                <p className="mt-1 text-[11px] text-[#666]">
+                                    Submit actual outcomes to improve confidence and calibration for future scores.
+                                </p>
+                                <div className="mt-2 grid grid-cols-2 gap-2">
+                                    <input
+                                        value={outcomeMetricsInput.views}
+                                        onChange={(e) => setOutcomeMetricsInput((prev) => ({ ...prev, views: e.target.value }))}
+                                        placeholder="views"
+                                        className="rounded-lg border border-[#d8d8d8] bg-white px-2 py-1 text-[11px] text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                    />
+                                    <input
+                                        value={outcomeMetricsInput.likes}
+                                        onChange={(e) => setOutcomeMetricsInput((prev) => ({ ...prev, likes: e.target.value }))}
+                                        placeholder="likes"
+                                        className="rounded-lg border border-[#d8d8d8] bg-white px-2 py-1 text-[11px] text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                    />
+                                    <input
+                                        value={outcomeMetricsInput.comments}
+                                        onChange={(e) => setOutcomeMetricsInput((prev) => ({ ...prev, comments: e.target.value }))}
+                                        placeholder="comments"
+                                        className="rounded-lg border border-[#d8d8d8] bg-white px-2 py-1 text-[11px] text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                    />
+                                    <input
+                                        value={outcomeMetricsInput.shares}
+                                        onChange={(e) => setOutcomeMetricsInput((prev) => ({ ...prev, shares: e.target.value }))}
+                                        placeholder="shares"
+                                        className="rounded-lg border border-[#d8d8d8] bg-white px-2 py-1 text-[11px] text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                    />
+                                    <input
+                                        value={outcomeMetricsInput.saves}
+                                        onChange={(e) => setOutcomeMetricsInput((prev) => ({ ...prev, saves: e.target.value }))}
+                                        placeholder="saves"
+                                        className="rounded-lg border border-[#d8d8d8] bg-white px-2 py-1 text-[11px] text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                    />
+                                    <input
+                                        value={outcomeMetricsInput.avg_view_duration_s}
+                                        onChange={(e) => setOutcomeMetricsInput((prev) => ({ ...prev, avg_view_duration_s: e.target.value }))}
+                                        placeholder="avg view duration s"
+                                        className="rounded-lg border border-[#d8d8d8] bg-white px-2 py-1 text-[11px] text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                    />
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => void handlePostOutcomeFromResearch()}
+                                    disabled={postingOutcome || draftHistory.length === 0}
+                                    className="mt-2 w-full rounded-lg border border-[#d9d9d9] bg-white px-2 py-1.5 text-[11px] text-[#444] disabled:opacity-50"
+                                >
+                                    {postingOutcome ? "Saving..." : "Save Outcome"}
+                                </button>
+                                {outcomeMessage && (
+                                    <p className="mt-2 text-[11px] text-[#555]">{outcomeMessage}</p>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="mt-4 rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                            <h3 className="mb-2 text-sm font-semibold text-[#222]">Collections</h3>
+                            <form onSubmit={handleCreateCollection} className="space-y-2">
+                                <input
+                                    value={newCollectionName}
+                                    onChange={(e) => setNewCollectionName(e.target.value)}
+                                    placeholder="New collection name"
+                                    className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-xs text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                />
+                                <select
+                                    value={newCollectionPlatform}
+                                    onChange={(e) => setNewCollectionPlatform(e.target.value as "mixed" | "youtube" | "instagram" | "tiktok")}
+                                    className="w-full rounded-lg border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                >
+                                    <option value="mixed">Mixed</option>
+                                    <option value="youtube">YouTube</option>
+                                    <option value="instagram">Instagram</option>
+                                    <option value="tiktok">TikTok</option>
+                                </select>
+                                <button
+                                    type="submit"
+                                    disabled={creatingCollection || !newCollectionName.trim()}
+                                    className="w-full rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-sm text-[#2f2f2f] hover:bg-[#efefef] disabled:opacity-50"
+                                >
+                                    {creatingCollection ? "Creating..." : "Create Collection"}
+                                </button>
+                            </form>
                         </div>
                     </aside>
                 </div>

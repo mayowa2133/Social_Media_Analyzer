@@ -19,14 +19,17 @@ from routers.rate_limit import rate_limit
 from services.credits import consume_credits
 from services.research import (
     capture_research_item_service,
+    create_research_collection_service,
     decode_export_token,
     export_research_collection_service,
     get_research_item_service,
     import_research_csv_service,
     import_research_url_service,
     list_research_collections_service,
+    move_research_item_service,
     resolve_export_file,
     search_research_items_service,
+    update_research_item_meta_service,
 )
 
 router = APIRouter()
@@ -60,6 +63,10 @@ class CaptureResearchItemRequest(BaseModel):
 class SearchResearchRequest(BaseModel):
     platform: Optional[str] = None
     query: Optional[str] = ""
+    collection_id: Optional[str] = None
+    include_archived: bool = False
+    pinned_only: bool = False
+    tags: Optional[List[str]] = None
     sort_by: Literal["created_at", "posted_at", "views", "likes", "comments", "shares", "saves"] = "created_at"
     sort_direction: Literal["asc", "desc"] = "desc"
     timeframe: Literal["24h", "7d", "30d", "90d", "all"] = "all"
@@ -71,6 +78,25 @@ class SearchResearchRequest(BaseModel):
 class ExportResearchRequest(BaseModel):
     collection_id: str
     format: Literal["csv", "json"] = "csv"
+    user_id: Optional[str] = None
+
+
+class CreateCollectionRequest(BaseModel):
+    name: str
+    platform: Optional[str] = "mixed"
+    description: Optional[str] = None
+    user_id: Optional[str] = None
+
+
+class MoveResearchItemRequest(BaseModel):
+    collection_id: str
+    user_id: Optional[str] = None
+
+
+class UpdateResearchItemMetaRequest(BaseModel):
+    tags: Optional[List[str]] = None
+    pinned: Optional[bool] = None
+    archived: Optional[bool] = None
     user_id: Optional[str] = None
 
 
@@ -176,6 +202,22 @@ async def list_research_collections(
     return {"collections": await list_research_collections_service(scoped_user_id, db)}
 
 
+@router.post("/collections")
+async def create_research_collection(
+    request: CreateCollectionRequest,
+    _rate_limit: None = Depends(rate_limit("research_create_collection", limit=120, window_seconds=3600)),
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
+    await _ensure_user(db, scoped_user_id)
+    return await create_research_collection_service(
+        user_id=scoped_user_id,
+        payload=request.model_dump(exclude_none=True),
+        db=db,
+    )
+
+
 @router.get("/items/{item_id}")
 async def get_research_item(
     item_id: str,
@@ -186,6 +228,45 @@ async def get_research_item(
     scoped_user_id = ensure_user_scope(auth.user_id, user_id)
     await _ensure_user(db, scoped_user_id)
     return await get_research_item_service(scoped_user_id, item_id, db)
+
+
+@router.post("/items/{item_id}/move")
+async def move_research_item(
+    item_id: str,
+    request: MoveResearchItemRequest,
+    _rate_limit: None = Depends(rate_limit("research_move_item", limit=240, window_seconds=3600)),
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
+    await _ensure_user(db, scoped_user_id)
+    return await move_research_item_service(
+        user_id=scoped_user_id,
+        item_id=item_id,
+        collection_id=request.collection_id,
+        db=db,
+    )
+
+
+@router.post("/items/{item_id}/meta")
+async def update_research_item_meta(
+    item_id: str,
+    request: UpdateResearchItemMetaRequest,
+    _rate_limit: None = Depends(rate_limit("research_item_meta", limit=300, window_seconds=3600)),
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
+    await _ensure_user(db, scoped_user_id)
+    payload = request.model_dump(exclude_none=True)
+    if not any(key in payload for key in ("tags", "pinned", "archived")):
+        raise HTTPException(status_code=422, detail="At least one of tags, pinned, archived is required")
+    return await update_research_item_meta_service(
+        user_id=scoped_user_id,
+        item_id=item_id,
+        payload=payload,
+        db=db,
+    )
 
 
 @router.post("/export")

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from config import settings
+from database import async_session_maker
 from models.calibration_snapshot import CalibrationSnapshot
 from models.outcome_metric import OutcomeMetric
 from models.research_item import ResearchItem
@@ -361,4 +362,42 @@ async def get_outcomes_summary_service(
         "insufficient_data": sample_size_all < 5,
         "recommendations": dominant.get("recommendations", []),
         "platforms": platforms,
+    }
+
+
+async def run_calibration_refresh_for_all_users_service(db: Optional[AsyncSession] = None) -> Dict[str, Any]:
+    """Refresh calibration snapshots for every user/platform with captured outcomes."""
+    _assert_outcome_learning_enabled()
+    refreshed = 0
+    skipped = 0
+    errors: List[str] = []
+
+    async def _run_with_session(session: AsyncSession) -> None:
+        nonlocal refreshed, skipped, errors
+        result = await session.execute(
+            select(OutcomeMetric.user_id, OutcomeMetric.platform).distinct()
+        )
+        pairs = result.all()
+
+        for user_id, platform in pairs:
+            if not user_id or not platform:
+                skipped += 1
+                continue
+            try:
+                await _refresh_snapshot(user_id=str(user_id), platform=str(platform), db=session)
+                refreshed += 1
+            except Exception as exc:
+                skipped += 1
+                errors.append(f"{user_id}:{platform}:{exc}")
+
+    if db is not None:
+        await _run_with_session(db)
+    else:
+        async with async_session_maker() as session:
+            await _run_with_session(session)
+
+    return {
+        "refreshed": refreshed,
+        "skipped": skipped,
+        "errors": errors[:20],
     }

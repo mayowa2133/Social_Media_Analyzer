@@ -50,6 +50,7 @@ class PlatformMetricsInput(BaseModel):
 
 class CreateAuditRequest(BaseModel):
     source_mode: Literal["url", "upload"] = "url"
+    platform: Optional[Literal["youtube", "instagram", "tiktok"]] = None
     video_url: Optional[str] = None
     upload_id: Optional[str] = None
     retention_points: Optional[List[RetentionPoint]] = None
@@ -229,6 +230,7 @@ async def run_multimodal_audit(
         progress="0",
         input_json={
             "source_mode": request.source_mode,
+            "platform": request.platform,
             "video_url": request.video_url,
             "upload_id": request.upload_id,
             "upload_file_name": upload_record.original_filename if upload_record else None,
