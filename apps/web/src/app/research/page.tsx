@@ -47,6 +47,16 @@ function platformLabel(value: string) {
     return value;
 }
 
+function postedAtFromWindow(windowKey: "now" | "7d" | "30d"): string {
+    const now = new Date();
+    if (windowKey === "7d") {
+        now.setDate(now.getDate() - 7);
+    } else if (windowKey === "30d") {
+        now.setDate(now.getDate() - 30);
+    }
+    return now.toISOString();
+}
+
 export default function ResearchPage() {
     const { data: session } = useSession();
 
@@ -132,6 +142,26 @@ export default function ResearchPage() {
         saves: "",
         avg_view_duration_s: "",
     });
+    const [publishSnapshotId, setPublishSnapshotId] = useState<string | null>(null);
+    const [outcomeWindow, setOutcomeWindow] = useState<"now" | "7d" | "30d">("now");
+    const [outcomePostedAt, setOutcomePostedAt] = useState<string>(postedAtFromWindow("now"));
+    const [platformOutcomeSummary, setPlatformOutcomeSummary] = useState<{
+        confidence?: string;
+        trend?: string;
+        drift_windows?: {
+            d7?: { mean_delta: number; mean_abs_error: number; count: number; bias: string };
+            d30?: { mean_delta: number; mean_abs_error: number; count: number; bias: string };
+        };
+        next_actions?: string[];
+        recent_outcomes?: Array<{
+            outcome_id: string;
+            draft_snapshot_id?: string | null;
+            posted_at?: string | null;
+            predicted_score?: number | null;
+            actual_score?: number | null;
+            calibration_delta?: number | null;
+        }>;
+    } | null>(null);
     const [postingOutcome, setPostingOutcome] = useState(false);
     const [outcomeMessage, setOutcomeMessage] = useState<string | null>(null);
 
@@ -139,6 +169,25 @@ export default function ResearchPage() {
         const selectedSet = new Set(selectedIds);
         return items.filter((item) => selectedSet.has(item.item_id));
     }, [items, selectedIds]);
+
+    const outcomesBySnapshotId = useMemo(() => {
+        const mapping: Record<string, {
+            outcome_id: string;
+            posted_at?: string | null;
+            predicted_score?: number | null;
+            actual_score?: number | null;
+            calibration_delta?: number | null;
+        }> = {};
+        const rows = platformOutcomeSummary?.recent_outcomes || [];
+        for (const row of rows) {
+            const snapshotId = row.draft_snapshot_id || "";
+            if (!snapshotId || mapping[snapshotId]) {
+                continue;
+            }
+            mapping[snapshotId] = row;
+        }
+        return mapping;
+    }, [platformOutcomeSummary?.recent_outcomes]);
 
     async function resolveUserId() {
         const stored = getCurrentUserId();
@@ -194,6 +243,16 @@ export default function ResearchPage() {
             setDraftHistory([]);
         } finally {
             setLoadingDraftHistory(false);
+        }
+    }
+
+    async function refreshOutcomeSummary(platform?: "youtube" | "instagram" | "tiktok") {
+        try {
+            await resolveUserId();
+            const summary = await getOutcomesSummary({ platform: platform || scriptPlatform });
+            setPlatformOutcomeSummary(summary);
+        } catch {
+            setPlatformOutcomeSummary(null);
         }
     }
 
@@ -273,7 +332,7 @@ export default function ResearchPage() {
         (async () => {
             try {
                 await resolveUserId();
-                await Promise.all([runSearch(1), refreshCollections(), refreshCredits(), refreshDraftHistory()]);
+                await Promise.all([runSearch(1), refreshCollections(), refreshCredits(), refreshDraftHistory(), refreshOutcomeSummary()]);
             } catch (err: any) {
                 setSearchError(err.message || "Please connect YouTube first.");
             }
@@ -282,7 +341,10 @@ export default function ResearchPage() {
     }, []);
 
     useEffect(() => {
-        void refreshDraftHistory(scriptPlatform);
+        void Promise.all([refreshDraftHistory(scriptPlatform), refreshOutcomeSummary(scriptPlatform)]);
+        setPublishSnapshotId(null);
+        setOutcomeWindow("now");
+        setOutcomePostedAt(postedAtFromWindow("now"));
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [scriptPlatform]);
 
@@ -573,6 +635,7 @@ export default function ResearchPage() {
         setSelectedVariantId(snapshot.variant_id || undefined);
         setSelectedSourceItemId(snapshot.source_item_id || undefined);
         setBaselineDetectorRankings(snapshot.detector_rankings || []);
+        setPublishSnapshotId(snapshot.id);
         setRescoreResult({
             score_breakdown: {
                 platform_metrics: 0,
@@ -603,8 +666,10 @@ export default function ResearchPage() {
     }
 
     async function handlePostOutcomeFromResearch() {
-        const latestSnapshot = draftHistory[0];
-        if (!latestSnapshot) {
+        const targetSnapshot =
+            (publishSnapshotId ? draftHistory.find((item) => item.id === publishSnapshotId) : null)
+            || draftHistory[0];
+        if (!targetSnapshot) {
             setOutcomeMessage("Save an iteration first.");
             return;
         }
@@ -614,7 +679,7 @@ export default function ResearchPage() {
             await resolveUserId();
             const response = await ingestOutcomeMetrics({
                 platform: scriptPlatform,
-                draft_snapshot_id: latestSnapshot.id,
+                draft_snapshot_id: targetSnapshot.id,
                 actual_metrics: {
                     views: Number(outcomeMetricsInput.views || 0),
                     likes: Number(outcomeMetricsInput.likes || 0),
@@ -623,13 +688,15 @@ export default function ResearchPage() {
                     saves: Number(outcomeMetricsInput.saves || 0),
                     avg_view_duration_s: Number(outcomeMetricsInput.avg_view_duration_s || 0),
                 },
-                posted_at: new Date().toISOString(),
-                predicted_score: latestSnapshot.rescored_score,
+                posted_at: outcomePostedAt || postedAtFromWindow("now"),
+                predicted_score: targetSnapshot.rescored_score,
             });
             const summary = await getOutcomesSummary({ platform: scriptPlatform });
+            setPlatformOutcomeSummary(summary);
             setOutcomeMessage(
                 `Outcome saved. Delta ${response.calibration_delta ?? "n/a"} • Confidence ${summary.confidence || "low"}`
             );
+            await refreshDraftHistory(scriptPlatform);
         } catch (err: any) {
             setOutcomeMessage(err.message || "Failed to save outcome");
         } finally {
@@ -1324,6 +1391,23 @@ export default function ResearchPage() {
                                                 >
                                                     Restore
                                                 </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setPublishSnapshotId(snapshot.id);
+                                                        setOutcomeWindow("now");
+                                                        setOutcomePostedAt(postedAtFromWindow("now"));
+                                                        setOutcomeMessage(`Marked snapshot ${snapshot.id.slice(0, 8)} as published.`);
+                                                    }}
+                                                    className="ml-1 mt-1 rounded-md border border-[#d8d8d8] bg-[#f9f9f9] px-2 py-1 text-[10px] text-[#444]"
+                                                >
+                                                    Mark Published
+                                                </button>
+                                                {outcomesBySnapshotId[snapshot.id] && (
+                                                    <p className="mt-1 text-[10px] text-[#666]">
+                                                        Outcome: {Math.round(outcomesBySnapshotId[snapshot.id].predicted_score || 0)}→{Math.round(outcomesBySnapshotId[snapshot.id].actual_score || 0)} ({outcomesBySnapshotId[snapshot.id].calibration_delta || 0})
+                                                    </p>
+                                                )}
                                             </div>
                                         ))}
                                     </div>
@@ -1331,10 +1415,61 @@ export default function ResearchPage() {
                             </div>
 
                             <div className="mt-4 rounded-xl border border-[#dfdfdf] bg-[#fafafa] p-3">
-                                <p className="text-xs font-semibold text-[#222]">Post Result From Latest Iteration</p>
+                                <p className="text-xs font-semibold text-[#222]">Publish + Post Result</p>
                                 <p className="mt-1 text-[11px] text-[#666]">
-                                    Submit actual outcomes to improve confidence and calibration for future scores.
+                                    Mark a snapshot as published, then submit a 7d/30d result quickly to calibrate future scoring.
                                 </p>
+                                <div className="mt-2 rounded-lg border border-[#e1e1e1] bg-white p-2 text-[11px] text-[#555]">
+                                    <p>
+                                        Target snapshot: {publishSnapshotId ? publishSnapshotId.slice(0, 10) : (draftHistory[0]?.id?.slice(0, 10) || "latest")}
+                                    </p>
+                                    <p>
+                                        Confidence: {platformOutcomeSummary?.confidence || "low"} · Trend: {platformOutcomeSummary?.trend || "flat"}
+                                    </p>
+                                </div>
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setOutcomeWindow("now");
+                                            setOutcomePostedAt(postedAtFromWindow("now"));
+                                        }}
+                                        className={`rounded-lg border px-2 py-1 text-[11px] ${outcomeWindow === "now" ? "border-[#b9b9b9] bg-white text-[#222]" : "border-[#dedede] bg-[#f4f4f4] text-[#666]"}`}
+                                    >
+                                        Now
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setOutcomeWindow("7d");
+                                            setOutcomePostedAt(postedAtFromWindow("7d"));
+                                        }}
+                                        className={`rounded-lg border px-2 py-1 text-[11px] ${outcomeWindow === "7d" ? "border-[#b9b9b9] bg-white text-[#222]" : "border-[#dedede] bg-[#f4f4f4] text-[#666]"}`}
+                                    >
+                                        7d Snapshot
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setOutcomeWindow("30d");
+                                            setOutcomePostedAt(postedAtFromWindow("30d"));
+                                        }}
+                                        className={`rounded-lg border px-2 py-1 text-[11px] ${outcomeWindow === "30d" ? "border-[#b9b9b9] bg-white text-[#222]" : "border-[#dedede] bg-[#f4f4f4] text-[#666]"}`}
+                                    >
+                                        30d Snapshot
+                                    </button>
+                                </div>
+                                <input
+                                    type="datetime-local"
+                                    value={outcomePostedAt.slice(0, 16)}
+                                    onChange={(e) => {
+                                        if (!e.target.value) {
+                                            return;
+                                        }
+                                        setOutcomePostedAt(new Date(e.target.value).toISOString());
+                                    }}
+                                    className="mt-2 w-full rounded-lg border border-[#d8d8d8] bg-white px-2 py-1 text-[11px] text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                />
                                 <div className="mt-2 grid grid-cols-2 gap-2">
                                     <input
                                         value={outcomeMetricsInput.views}
@@ -1383,6 +1518,23 @@ export default function ResearchPage() {
                                 </button>
                                 {outcomeMessage && (
                                     <p className="mt-2 text-[11px] text-[#555]">{outcomeMessage}</p>
+                                )}
+                                {platformOutcomeSummary?.drift_windows && (
+                                    <div className="mt-2 rounded-lg border border-[#e1e1e1] bg-white p-2 text-[11px] text-[#666]">
+                                        <p>
+                                            Drift 7d: {platformOutcomeSummary.drift_windows.d7?.mean_delta ?? 0} ({platformOutcomeSummary.drift_windows.d7?.bias || "neutral"})
+                                        </p>
+                                        <p>
+                                            Drift 30d: {platformOutcomeSummary.drift_windows.d30?.mean_delta ?? 0} ({platformOutcomeSummary.drift_windows.d30?.bias || "neutral"})
+                                        </p>
+                                    </div>
+                                )}
+                                {!!platformOutcomeSummary?.next_actions?.length && (
+                                    <ul className="mt-2 space-y-1 text-[11px] text-[#555]">
+                                        {platformOutcomeSummary.next_actions.slice(0, 3).map((action, idx) => (
+                                            <li key={idx}>• {action}</li>
+                                        ))}
+                                    </ul>
                                 )}
                             </div>
                         </div>

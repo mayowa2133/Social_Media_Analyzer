@@ -19,6 +19,7 @@ from models.calibration_snapshot import CalibrationSnapshot
 from models.draft_snapshot import DraftSnapshot
 from models.research_item import ResearchItem
 from services.blueprint import generate_blueprint_service
+from services.outcomes import get_outcomes_summary_service
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -216,27 +217,45 @@ async def _prediction_outcome_context(
     user_id: str,
     db: AsyncSession,
     platform_hint: Optional[str] = None,
+    audit_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     preferred_platform = str(platform_hint or "youtube").strip().lower()
     if preferred_platform not in {"youtube", "instagram", "tiktok"}:
         preferred_platform = "youtube"
 
-    latest_outcome_result = await db.execute(
-        select(OutcomeMetric)
-        .where(
-            OutcomeMetric.user_id == user_id,
-            OutcomeMetric.platform == preferred_platform,
+    linked_outcome = None
+    if audit_id:
+        linked_outcome_result = await db.execute(
+            select(OutcomeMetric)
+            .where(
+                OutcomeMetric.user_id == user_id,
+                OutcomeMetric.report_id == audit_id,
+            )
+            .order_by(OutcomeMetric.posted_at.desc(), OutcomeMetric.created_at.desc())
+            .limit(1)
         )
-        .order_by(OutcomeMetric.posted_at.desc(), OutcomeMetric.created_at.desc())
-        .limit(1)
-    )
-    latest_outcome = latest_outcome_result.scalar_one_or_none()
+        linked_outcome = linked_outcome_result.scalar_one_or_none()
+
+    latest_outcome = linked_outcome
+    if latest_outcome is None:
+        latest_outcome_result = await db.execute(
+            select(OutcomeMetric)
+            .where(
+                OutcomeMetric.user_id == user_id,
+                OutcomeMetric.platform == preferred_platform,
+            )
+            .order_by(OutcomeMetric.posted_at.desc(), OutcomeMetric.created_at.desc())
+            .limit(1)
+        )
+        latest_outcome = latest_outcome_result.scalar_one_or_none()
 
     if latest_outcome:
         prediction_vs_actual: Optional[Dict[str, Any]] = {
             "outcome_id": latest_outcome.id,
             "platform": latest_outcome.platform,
             "content_item_id": latest_outcome.content_item_id,
+            "draft_snapshot_id": latest_outcome.draft_snapshot_id,
+            "report_id": latest_outcome.report_id,
             "posted_at": latest_outcome.posted_at.isoformat() if latest_outcome.posted_at else None,
             "predicted_score": latest_outcome.predicted_score,
             "actual_score": latest_outcome.actual_score,
@@ -249,6 +268,18 @@ async def _prediction_outcome_context(
     else:
         prediction_vs_actual = None
         platform = preferred_platform
+
+    summary_data: Dict[str, Any] = {}
+    try:
+        summary_payload = await get_outcomes_summary_service(
+            user_id=user_id,
+            db=db,
+            platform=platform,
+        )
+        if isinstance(summary_payload, dict):
+            summary_data = summary_payload
+    except Exception:
+        summary_data = {}
 
     snapshot_result = await db.execute(
         select(CalibrationSnapshot)
@@ -290,9 +321,25 @@ async def _prediction_outcome_context(
             ],
         }
 
+    if summary_data:
+        calibration_confidence["trend"] = summary_data.get("trend", calibration_confidence["trend"])
+        calibration_confidence["confidence"] = summary_data.get("confidence", calibration_confidence["confidence"])
+        calibration_confidence["insufficient_data"] = bool(summary_data.get("insufficient_data", calibration_confidence["insufficient_data"]))
+        calibration_confidence["sample_size"] = int(summary_data.get("sample_size", calibration_confidence["sample_size"]))
+        calibration_confidence["mean_abs_error"] = float(summary_data.get("avg_error", calibration_confidence["mean_abs_error"]))
+        calibration_confidence["hit_rate"] = float(summary_data.get("hit_rate", calibration_confidence["hit_rate"]))
+        summary_recommendations = summary_data.get("recommendations")
+        if isinstance(summary_recommendations, list) and summary_recommendations:
+            calibration_confidence["recommendations"] = summary_recommendations
+
     return {
         "prediction_vs_actual": prediction_vs_actual,
         "calibration_confidence": calibration_confidence,
+        "outcome_drift": {
+            "drift_windows": summary_data.get("drift_windows", {}),
+            "next_actions": summary_data.get("next_actions", []),
+            "recent_outcomes": summary_data.get("recent_outcomes", []),
+        },
     }
 
 
@@ -591,7 +638,12 @@ async def get_consolidated_report(user_id: str, audit_id: Optional[str], db: Asy
 
     # 3. Fetch Competitor Blueprint (Phase E)
     blueprint = await _get_or_refresh_blueprint(user_id, db, platform=report_platform)
-    outcome_context = await _prediction_outcome_context(user_id, db, platform_hint=report_platform)
+    outcome_context = await _prediction_outcome_context(
+        user_id,
+        db,
+        platform_hint=report_platform,
+        audit_id=audit.id if audit else audit_id,
+    )
     best_edited_variant = await _best_edited_variant_context(
         user_id=user_id,
         audit_id=audit.id if audit else audit_id,
@@ -621,6 +673,7 @@ async def get_consolidated_report(user_id: str, audit_id: Optional[str], db: Asy
         "blueprint": blueprint,
         "prediction_vs_actual": outcome_context.get("prediction_vs_actual"),
         "calibration_confidence": outcome_context.get("calibration_confidence"),
+        "outcome_drift": outcome_context.get("outcome_drift"),
         "best_edited_variant": best_edited_variant,
         "quick_actions": _build_optimizer_quick_actions(best_edited_variant),
         "recommendations": _normalize_recommendations(diagnosis, video_analysis, performance_prediction, blueprint),

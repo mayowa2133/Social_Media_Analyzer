@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
@@ -56,6 +56,14 @@ def _parse_datetime(value: Any) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _compute_actual_score(actual_metrics: Dict[str, Any], retention_points: List[Dict[str, Any]]) -> float:
@@ -132,6 +140,111 @@ def _confidence_bucket(sample_size: int, mean_abs_error: float) -> str:
     if sample_size >= 8 and mean_abs_error <= 16:
         return "medium"
     return "low"
+
+
+def _windowed_drift(rows_with_prediction: List[OutcomeMetric], days: int) -> Dict[str, Any]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(int(days), 1))
+    scoped: List[OutcomeMetric] = []
+    for row in rows_with_prediction:
+        posted_at = _as_utc(row.posted_at)
+        if posted_at is not None and posted_at >= cutoff:
+            scoped.append(row)
+    if not scoped:
+        return {
+            "days": int(days),
+            "count": 0,
+            "mean_delta": 0.0,
+            "mean_abs_error": 0.0,
+            "bias": "neutral",
+        }
+
+    deltas = [float(row.calibration_delta or 0.0) for row in scoped if row.calibration_delta is not None]
+    if not deltas:
+        return {
+            "days": int(days),
+            "count": len(scoped),
+            "mean_delta": 0.0,
+            "mean_abs_error": 0.0,
+            "bias": "neutral",
+        }
+
+    mean_delta = sum(deltas) / len(deltas)
+    mean_abs_error = sum(abs(delta) for delta in deltas) / len(deltas)
+    if mean_delta >= 2.0:
+        bias = "underpredicting"
+    elif mean_delta <= -2.0:
+        bias = "overpredicting"
+    else:
+        bias = "neutral"
+
+    return {
+        "days": int(days),
+        "count": len(deltas),
+        "mean_delta": round(mean_delta, 2),
+        "mean_abs_error": round(mean_abs_error, 2),
+        "bias": bias,
+    }
+
+
+def _drift_actions(
+    *,
+    platform: str,
+    sample_size: int,
+    mean_abs_error: float,
+    drift_7d: Dict[str, Any],
+    drift_30d: Dict[str, Any],
+) -> List[str]:
+    actions: List[str] = []
+    platform_label = str(platform or "youtube").capitalize()
+
+    if sample_size < 5:
+        actions.append(f"Capture at least 5 {platform_label} post outcomes to improve confidence.")
+
+    bias_7d = str(drift_7d.get("bias", "neutral"))
+    if bias_7d == "underpredicting":
+        actions.append("Recent actuals are above predictions. Raise targets and test stronger hook ambition.")
+    elif bias_7d == "overpredicting":
+        actions.append("Recent actuals are below predictions. Tighten hooks and reduce dead zones before posting.")
+
+    if mean_abs_error > 16:
+        actions.append("Re-score every edited draft and execute top 2 detector actions before publishing.")
+    elif mean_abs_error > 10:
+        actions.append("Use A/B script variants and keep only drafts with positive re-score deltas.")
+    else:
+        actions.append("Calibration is healthy. Scale the current format and topic mix.")
+
+    bias_30d = str(drift_30d.get("bias", "neutral"))
+    if bias_30d != "neutral" and bias_30d != bias_7d:
+        actions.append("7d vs 30d drift differs. Re-check posting cadence and topic consistency.")
+
+    deduped: List[str] = []
+    seen = set()
+    for action in actions:
+        key = action.strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(key)
+    return deduped[:4]
+
+
+def _serialize_recent_outcomes(rows: List[OutcomeMetric], limit: int = 12) -> List[Dict[str, Any]]:
+    payload: List[Dict[str, Any]] = []
+    for row in rows[: max(int(limit), 1)]:
+        payload.append(
+            {
+                "outcome_id": row.id,
+                "platform": row.platform,
+                "draft_snapshot_id": row.draft_snapshot_id,
+                "report_id": row.report_id,
+                "content_item_id": row.content_item_id,
+                "posted_at": row.posted_at.isoformat() if row.posted_at else None,
+                "predicted_score": row.predicted_score,
+                "actual_score": row.actual_score,
+                "calibration_delta": row.calibration_delta,
+            }
+        )
+    return payload
 
 
 async def _resolve_predicted_score(
@@ -308,7 +421,33 @@ async def get_outcomes_summary_service(
         if platform_key not in {"youtube", "instagram", "tiktok"}:
             raise HTTPException(status_code=422, detail="platform must be youtube, instagram, or tiktok")
         snapshot = await _refresh_snapshot(user_id=user_id, platform=platform_key, db=db)
-        return snapshot
+
+        rows_result = await db.execute(
+            select(OutcomeMetric)
+            .where(OutcomeMetric.user_id == user_id, OutcomeMetric.platform == platform_key)
+            .order_by(OutcomeMetric.posted_at.desc(), OutcomeMetric.created_at.desc())
+            .limit(120)
+        )
+        rows = rows_result.scalars().all()
+        rows_with_prediction = [row for row in rows if row.predicted_score is not None and row.calibration_delta is not None]
+        drift_7d = _windowed_drift(rows_with_prediction, 7)
+        drift_30d = _windowed_drift(rows_with_prediction, 30)
+        next_actions = _drift_actions(
+            platform=platform_key,
+            sample_size=int(snapshot.get("sample_size", 0) or 0),
+            mean_abs_error=float(snapshot.get("avg_error", 0.0) or 0.0),
+            drift_7d=drift_7d,
+            drift_30d=drift_30d,
+        )
+        return {
+            **snapshot,
+            "drift_windows": {
+                "d7": drift_7d,
+                "d30": drift_30d,
+            },
+            "recent_outcomes": _serialize_recent_outcomes(rows, limit=12),
+            "next_actions": next_actions,
+        }
 
     rows_result = await db.execute(
         select(CalibrationSnapshot)

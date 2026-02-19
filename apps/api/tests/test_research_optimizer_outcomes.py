@@ -202,6 +202,12 @@ async def test_outcomes_ingest_and_summary(integration_client):
     assert summary["platform"] == "youtube"
     assert summary["sample_size"] >= 1
     assert "recommendations" in summary
+    assert "drift_windows" in summary
+    assert "d7" in summary["drift_windows"]
+    assert "d30" in summary["drift_windows"]
+    assert isinstance(summary.get("recent_outcomes"), list)
+    assert len(summary["recent_outcomes"]) >= 1
+    assert isinstance(summary.get("next_actions"), list)
 
 
 @pytest.mark.asyncio

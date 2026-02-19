@@ -12,6 +12,16 @@ import {
 import { ReportScorecard } from "@/components/ReportScorecard";
 import { BlueprintDisplay } from "@/components/blueprint-display";
 
+function postedAtFromWindow(windowKey: "now" | "7d" | "30d"): string {
+    const now = new Date();
+    if (windowKey === "7d") {
+        now.setDate(now.getDate() - 7);
+    } else if (windowKey === "30d") {
+        now.setDate(now.getDate() - 30);
+    }
+    return now.toISOString().slice(0, 16);
+}
+
 export default function ReportPage({ params }: { params: { id: string } }) {
     const [report, setReport] = useState<ConsolidatedReport | null>(null);
     const [loading, setLoading] = useState(true);
@@ -20,6 +30,17 @@ export default function ReportPage({ params }: { params: { id: string } }) {
     const [outcomeNotice, setOutcomeNotice] = useState<string | null>(null);
     const [outcomeError, setOutcomeError] = useState<string | null>(null);
     const [allowPlatformMismatch, setAllowPlatformMismatch] = useState(false);
+    const [publishMarkedAt, setPublishMarkedAt] = useState<string | null>(null);
+    const [outcomeWindow, setOutcomeWindow] = useState<"now" | "7d" | "30d">("now");
+    const [outcomeSummary, setOutcomeSummary] = useState<{
+        confidence?: string;
+        trend?: string;
+        drift_windows?: {
+            d7?: { mean_delta: number; mean_abs_error: number; count: number; bias: string };
+            d30?: { mean_delta: number; mean_abs_error: number; count: number; bias: string };
+        };
+        next_actions?: string[];
+    } | null>(null);
     const [recalibrating, setRecalibrating] = useState(false);
     const [outcomeForm, setOutcomeForm] = useState({
         platform: "youtube",
@@ -49,6 +70,22 @@ export default function ReportPage({ params }: { params: { id: string } }) {
             platform: report.report_platform,
         }));
         setAllowPlatformMismatch(false);
+        setOutcomeWindow("now");
+        setPublishMarkedAt(null);
+    }, [report?.report_platform]);
+
+    useEffect(() => {
+        if (!report?.report_platform) {
+            return;
+        }
+        (async () => {
+            try {
+                const summary = await getOutcomesSummary({ platform: report.report_platform });
+                setOutcomeSummary(summary);
+            } catch {
+                setOutcomeSummary(null);
+            }
+        })();
     }, [report?.report_platform]);
 
     if (loading) {
@@ -112,9 +149,13 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                 report_id: report.audit_id,
             });
             const summary = await getOutcomesSummary({ platform: outcomeForm.platform as "youtube" | "instagram" | "tiktok" });
+            setOutcomeSummary(summary);
             setOutcomeNotice(
                 `Saved. Calibration delta ${response.calibration_delta ?? "n/a"} • Confidence ${summary.confidence || "low"}`
             );
+            const id = params.id === "latest" ? undefined : params.id;
+            const refreshedReport = await getConsolidatedReport(id);
+            setReport(refreshedReport);
         } catch (err: any) {
             setOutcomeError(err.message || "Could not save outcome");
         } finally {
@@ -128,6 +169,8 @@ export default function ReportPage({ params }: { params: { id: string } }) {
         try {
             const result = await recalibrateOutcomes();
             setOutcomeNotice(`Recalibrated ${result.refreshed} user/platform snapshots.`);
+            const summary = await getOutcomesSummary({ platform: reportPlatform as "youtube" | "instagram" | "tiktok" });
+            setOutcomeSummary(summary);
         } catch (err: any) {
             setOutcomeError(err.message || "Recalibration failed");
         } finally {
@@ -180,6 +223,16 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                                     ))}
                                 </ul>
                             )}
+                            {outcomeSummary?.drift_windows && (
+                                <div className="mt-3 rounded-xl border border-[#e5e5e5] bg-[#fafafa] p-3 text-[11px] text-[#666]">
+                                    <p>
+                                        Drift 7d: {outcomeSummary.drift_windows.d7?.mean_delta ?? 0} (bias {outcomeSummary.drift_windows.d7?.bias || "neutral"})
+                                    </p>
+                                    <p>
+                                        Drift 30d: {outcomeSummary.drift_windows.d30?.mean_delta ?? 0} (bias {outcomeSummary.drift_windows.d30?.bias || "neutral"})
+                                    </p>
+                                </div>
+                            )}
                         </section>
                     )}
 
@@ -222,14 +275,67 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                     <section className="mb-10 rounded-2xl border border-[#dcdcdc] bg-white p-4">
                         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                             <h2 className="text-lg font-bold text-[#1f1f1f]">Post Result (Outcomes Learning)</h2>
-                            <button
-                                type="button"
-                                onClick={() => void handleRecalibrate()}
-                                disabled={recalibrating}
-                                className="rounded-lg border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-1 text-xs text-[#555] hover:bg-[#efefef] disabled:opacity-50"
-                            >
-                                {recalibrating ? "Recalibrating..." : "Run Recalibration"}
-                            </button>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setPublishMarkedAt(new Date().toISOString());
+                                        setOutcomeForm((prev) => ({ ...prev, posted_at: postedAtFromWindow("now") }));
+                                        setOutcomeWindow("now");
+                                    }}
+                                    className="rounded-lg border border-[#d9d9d9] bg-white px-3 py-1 text-xs text-[#555] hover:bg-[#efefef]"
+                                >
+                                    Mark as Published
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void handleRecalibrate()}
+                                    disabled={recalibrating}
+                                    className="rounded-lg border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-1 text-xs text-[#555] hover:bg-[#efefef] disabled:opacity-50"
+                                >
+                                    {recalibrating ? "Recalibrating..." : "Run Recalibration"}
+                                </button>
+                            </div>
+                        </div>
+                        <div className="mb-3 rounded-xl border border-[#e5e5e5] bg-[#fafafa] p-3">
+                            <p className="text-xs text-[#666]">
+                                Publish window:
+                            </p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setOutcomeWindow("now");
+                                        setOutcomeForm((prev) => ({ ...prev, posted_at: postedAtFromWindow("now") }));
+                                    }}
+                                    className={`rounded-lg border px-3 py-1 text-xs ${outcomeWindow === "now" ? "border-[#bbbbbb] bg-white text-[#222]" : "border-[#dddddd] bg-[#f4f4f4] text-[#666]"}`}
+                                >
+                                    Now
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setOutcomeWindow("7d");
+                                        setOutcomeForm((prev) => ({ ...prev, posted_at: postedAtFromWindow("7d") }));
+                                    }}
+                                    className={`rounded-lg border px-3 py-1 text-xs ${outcomeWindow === "7d" ? "border-[#bbbbbb] bg-white text-[#222]" : "border-[#dddddd] bg-[#f4f4f4] text-[#666]"}`}
+                                >
+                                    7d Snapshot
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setOutcomeWindow("30d");
+                                        setOutcomeForm((prev) => ({ ...prev, posted_at: postedAtFromWindow("30d") }));
+                                    }}
+                                    className={`rounded-lg border px-3 py-1 text-xs ${outcomeWindow === "30d" ? "border-[#bbbbbb] bg-white text-[#222]" : "border-[#dddddd] bg-[#f4f4f4] text-[#666]"}`}
+                                >
+                                    30d Snapshot
+                                </button>
+                            </div>
+                            {publishMarkedAt && (
+                                <p className="mt-2 text-[11px] text-[#666]">Marked published at {new Date(publishMarkedAt).toLocaleString()}</p>
+                            )}
                         </div>
                         <form onSubmit={handlePostOutcome} className="grid gap-2 md:grid-cols-4">
                             <select
@@ -278,6 +384,17 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                         {outcomeError && <p className="mt-2 text-xs text-[#7f3a3a]">{outcomeError}</p>}
                     </section>
 
+                    {(report.outcome_drift?.next_actions?.length || outcomeSummary?.next_actions?.length) && (
+                        <section className="mb-10 rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                            <h2 className="text-lg font-bold text-[#1f1f1f]">Calibration Drift: Do This Next</h2>
+                            <ul className="mt-3 space-y-1 text-xs text-[#555]">
+                                {(report.outcome_drift?.next_actions || outcomeSummary?.next_actions || []).slice(0, 4).map((action, idx) => (
+                                    <li key={idx}>• {action}</li>
+                                ))}
+                            </ul>
+                        </section>
+                    )}
+
                     {report.best_edited_variant && (
                         <section className="mb-10 rounded-2xl border border-[#dcdcdc] bg-white p-4">
                             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -304,6 +421,16 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                                         </li>
                                     ))}
                                 </ul>
+                            )}
+                            {report.prediction_vs_actual?.draft_snapshot_id === report.best_edited_variant.id && (
+                                <div className="mt-3 rounded-xl border border-[#e3e3e3] bg-[#fafafa] p-3 text-[11px] text-[#555]">
+                                    <p>
+                                        Outcome linked to this draft: predicted {Math.round(report.prediction_vs_actual.predicted_score || 0)} vs actual {Math.round(report.prediction_vs_actual.actual_score || 0)}
+                                    </p>
+                                    <p>
+                                        Delta {report.prediction_vs_actual.calibration_delta || 0}
+                                    </p>
+                                </div>
                             )}
                             <Link
                                 href={`/research?mode=optimizer&source_item_id=${encodeURIComponent(report.best_edited_variant.source_item_id || "")}&topic=${encodeURIComponent(report.best_edited_variant.script_preview.slice(0, 100))}&source_context=${encodeURIComponent("report_refinement")}`}

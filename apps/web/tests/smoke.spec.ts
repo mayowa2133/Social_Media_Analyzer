@@ -305,6 +305,16 @@ function buildMockReport(
             recommendations: ["Keep ingesting outcomes for tighter confidence."],
         },
         prediction_vs_actual: null,
+        outcome_drift: {
+            drift_windows: {
+                d7: { days: 7, count: 2, mean_delta: -1.2, mean_abs_error: 6.4, bias: "neutral" },
+                d30: { days: 30, count: 4, mean_delta: -0.8, mean_abs_error: 8.1, bias: "neutral" },
+            },
+            next_actions: [
+                "Calibration is healthy. Scale the current format and topic mix.",
+            ],
+            recent_outcomes: [],
+        },
     };
 }
 
@@ -313,6 +323,7 @@ async function installApiMocks(page: Page) {
     const connectedPlatforms = { youtube: false, instagram: false, tiktok: false };
     const pollCountByAudit: Record<string, number> = {};
     const draftSnapshots: any[] = [];
+    const outcomes: Array<any> = [];
 
     await page.route("http://localhost:8000/**", async (route) => {
         const request = route.request();
@@ -521,6 +532,81 @@ async function installApiMocks(page: Page) {
                     audit_run: 3,
                 },
                 recent_entries: [],
+            });
+            return;
+        }
+
+        if (method === "POST" && path === "/outcomes/ingest") {
+            const payload = request.postDataJSON() as any;
+            const predicted = Number(payload.predicted_score || 0);
+            const views = Number(payload.actual_metrics?.views || 0);
+            const likes = Number(payload.actual_metrics?.likes || 0);
+            const comments = Number(payload.actual_metrics?.comments || 0);
+            const shares = Number(payload.actual_metrics?.shares || 0);
+            const saves = Number(payload.actual_metrics?.saves || 0);
+            const actualScore = Math.round(Math.min(100, Math.max(0, (views / 2000) + (likes / 100) + (comments / 30) + (shares / 20) + (saves / 15))));
+            const delta = Number((actualScore - predicted).toFixed(2));
+            const row = {
+                outcome_id: `outcome-${outcomes.length + 1}`,
+                platform: payload.platform || "youtube",
+                draft_snapshot_id: payload.draft_snapshot_id || null,
+                report_id: payload.report_id || null,
+                content_item_id: payload.content_item_id || null,
+                posted_at: payload.posted_at || "2026-02-12T12:00:00Z",
+                predicted_score: predicted,
+                actual_score: actualScore,
+                calibration_delta: delta,
+            };
+            outcomes.unshift(row);
+            await json(200, {
+                outcome_id: row.outcome_id,
+                calibration_delta: row.calibration_delta,
+                actual_score: row.actual_score,
+                predicted_score: row.predicted_score,
+                confidence_update: {
+                    platform: row.platform,
+                    sample_size: outcomes.length,
+                    avg_error: 9.2,
+                    hit_rate: 0.62,
+                    trend: "flat",
+                    confidence: "medium",
+                    insufficient_data: outcomes.length < 5,
+                    recommendations: ["Keep ingesting outcomes for tighter confidence."],
+                },
+            });
+            return;
+        }
+
+        if (method === "GET" && path === "/outcomes/summary") {
+            const platform = (url.searchParams.get("platform") || "youtube") as "youtube" | "instagram" | "tiktok";
+            const platformRows = outcomes.filter((item) => item.platform === platform);
+            await json(200, {
+                platform,
+                sample_size: platformRows.length,
+                avg_error: 9.2,
+                hit_rate: 0.62,
+                trend: "flat",
+                confidence: platformRows.length >= 1 ? "medium" : "low",
+                insufficient_data: platformRows.length < 5,
+                recommendations: ["Keep ingesting outcomes for tighter confidence."],
+                drift_windows: {
+                    d7: {
+                        days: 7,
+                        count: platformRows.length,
+                        mean_delta: platformRows.length ? platformRows[0].calibration_delta : 0,
+                        mean_abs_error: platformRows.length ? Math.abs(platformRows[0].calibration_delta) : 0,
+                        bias: "neutral",
+                    },
+                    d30: {
+                        days: 30,
+                        count: platformRows.length,
+                        mean_delta: platformRows.length ? platformRows[0].calibration_delta : 0,
+                        mean_abs_error: platformRows.length ? Math.abs(platformRows[0].calibration_delta) : 0,
+                        bias: "neutral",
+                    },
+                },
+                recent_outcomes: platformRows.slice(0, 12),
+                next_actions: ["Calibration is healthy. Scale the current format and topic mix."],
             });
             return;
         }
@@ -993,4 +1079,23 @@ test("instagram parity -> connect -> discover -> blueprint -> upload audit -> re
     await expect(page).toHaveURL(new RegExp(`/report/${MOCK_IG_AUDIT_ID}$`), { timeout: 20_000 });
     await expect(page.getByText(/Report platform: instagram/i)).toBeVisible();
     await expect(page.getByRole("heading", { name: "Prediction Confidence" })).toBeVisible();
+});
+
+test("report -> mark published -> save outcome updates calibration notice", async ({ page }) => {
+    await installApiMocks(page);
+    await installLocalAuthState(page);
+
+    await page.goto(`/report/${MOCK_AUDIT_ID}`);
+    await expect(page.getByText(/Report platform: youtube/i)).toBeVisible();
+
+    await page.getByRole("button", { name: "Mark as Published" }).click();
+    await page.getByPlaceholder("views").fill("25000");
+    await page.getByPlaceholder("likes").fill("1300");
+    await page.getByPlaceholder("comments").fill("120");
+    await page.getByPlaceholder("shares").fill("95");
+    await page.getByPlaceholder("saves").fill("88");
+    await page.getByRole("button", { name: "Save Post Result" }).click();
+
+    await expect(page.getByText(/Saved\. Calibration delta/)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Calibration Drift: Do This Next" })).toBeVisible();
 });

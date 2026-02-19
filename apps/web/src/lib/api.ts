@@ -1169,6 +1169,8 @@ export interface ConsolidatedReport {
         outcome_id: string;
         platform: string;
         content_item_id?: string | null;
+        draft_snapshot_id?: string | null;
+        report_id?: string | null;
         posted_at?: string | null;
         predicted_score?: number | null;
         actual_score?: number | null;
@@ -1184,6 +1186,36 @@ export interface ConsolidatedReport {
         confidence: "low" | "medium" | "high";
         insufficient_data: boolean;
         recommendations: string[];
+    };
+    outcome_drift?: {
+        drift_windows?: {
+            d7?: {
+                days: number;
+                count: number;
+                mean_delta: number;
+                mean_abs_error: number;
+                bias: "underpredicting" | "overpredicting" | "neutral";
+            };
+            d30?: {
+                days: number;
+                count: number;
+                mean_delta: number;
+                mean_abs_error: number;
+                bias: "underpredicting" | "overpredicting" | "neutral";
+            };
+        };
+        next_actions?: string[];
+        recent_outcomes?: Array<{
+            outcome_id: string;
+            platform: string;
+            draft_snapshot_id?: string | null;
+            report_id?: string | null;
+            content_item_id?: string | null;
+            posted_at?: string | null;
+            predicted_score?: number | null;
+            actual_score?: number | null;
+            calibration_delta?: number | null;
+        }>;
     };
     best_edited_variant?: {
         id: string;
@@ -1743,7 +1775,54 @@ export async function ingestOutcomeMetrics(payload: {
 export async function getOutcomesSummary(payload: {
     platform?: "youtube" | "instagram" | "tiktok";
     userId?: string;
-} = {}): Promise<Record<string, any>> {
+} = {}): Promise<{
+    platform?: "youtube" | "instagram" | "tiktok";
+    sample_size?: number;
+    avg_error?: number;
+    hit_rate?: number;
+    trend?: string;
+    confidence?: "low" | "medium" | "high";
+    insufficient_data?: boolean;
+    recommendations?: string[];
+    drift_windows?: {
+        d7: {
+            days: number;
+            count: number;
+            mean_delta: number;
+            mean_abs_error: number;
+            bias: "underpredicting" | "overpredicting" | "neutral";
+        };
+        d30: {
+            days: number;
+            count: number;
+            mean_delta: number;
+            mean_abs_error: number;
+            bias: "underpredicting" | "overpredicting" | "neutral";
+        };
+    };
+    recent_outcomes?: Array<{
+        outcome_id: string;
+        platform: string;
+        draft_snapshot_id?: string | null;
+        report_id?: string | null;
+        content_item_id?: string | null;
+        posted_at?: string | null;
+        predicted_score?: number | null;
+        actual_score?: number | null;
+        calibration_delta?: number | null;
+    }>;
+    next_actions?: string[];
+    platforms?: Array<{
+        platform: string;
+        sample_size: number;
+        avg_error: number;
+        hit_rate: number;
+        trend: string;
+        confidence: "low" | "medium" | "high";
+        insufficient_data: boolean;
+        recommendations: string[];
+    }>;
+}> {
     const qUserId = resolveUserId(payload.userId);
     const platformPart = payload.platform ? `&platform=${safeEncode(payload.platform)}` : "";
     return fetchApi(`/outcomes/summary?user_id=${safeEncode(qUserId)}${platformPart}`);

@@ -127,3 +127,6 @@ async def test_report_contract_preserves_new_prediction_fields(report_db):
     assert "prediction_vs_actual" in report
     assert "quick_actions" in report
     assert "best_edited_variant" in report
+    assert "outcome_drift" in report
+    assert "drift_windows" in report["outcome_drift"]
+    assert "next_actions" in report["outcome_drift"]
