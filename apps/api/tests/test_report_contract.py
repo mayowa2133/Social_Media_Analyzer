@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from database import Base
 from models.audit import Audit
+from models.calibration_snapshot import CalibrationSnapshot
 from models.user import User
 from services.report import get_consolidated_report
 
@@ -29,6 +30,7 @@ async def report_db(tmp_path):
                 "diagnosis": {"recommendations": []},
                 "video_analysis": {"overall_score": 7.0, "summary": "test", "sections": []},
                 "performance_prediction": {
+                    "platform": "instagram",
                     "format_type": "short_form",
                     "duration_seconds": 40,
                     "platform_metrics": {
@@ -82,6 +84,18 @@ async def report_db(tmp_path):
                 },
             },
         )
+        session.add(
+            CalibrationSnapshot(
+                id="cal-ig-1",
+                user_id="report-user",
+                platform="instagram",
+                sample_size=12,
+                mean_abs_error=9.5,
+                hit_rate=0.66,
+                trend="flat",
+                recommendations_json=["Keep refining hooks and pacing."],
+            )
+        )
         session.add(audit)
         await session.commit()
         yield session
@@ -107,6 +121,7 @@ async def test_report_contract_preserves_new_prediction_fields(report_db):
     assert any("Improve Time to Value" in item for item in recommendations)
     assert "calibration_confidence" in report
     assert isinstance(report["calibration_confidence"], dict)
+    assert report["calibration_confidence"]["platform"] == "instagram"
     assert "prediction_vs_actual" in report
     assert "quick_actions" in report
     assert "best_edited_variant" in report

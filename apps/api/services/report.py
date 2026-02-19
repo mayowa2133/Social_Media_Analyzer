@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from typing import Dict, Any, Optional, List
@@ -16,6 +17,7 @@ from models.competitor import Competitor
 from models.outcome_metric import OutcomeMetric
 from models.calibration_snapshot import CalibrationSnapshot
 from models.draft_snapshot import DraftSnapshot
+from models.research_item import ResearchItem
 from services.blueprint import generate_blueprint_service
 from config import settings
 
@@ -200,10 +202,21 @@ def _confidence_bucket(sample_size: int, mean_abs_error: float) -> str:
     return "low"
 
 
-async def _prediction_outcome_context(user_id: str, db: AsyncSession) -> Dict[str, Any]:
+async def _prediction_outcome_context(
+    user_id: str,
+    db: AsyncSession,
+    platform_hint: Optional[str] = None,
+) -> Dict[str, Any]:
+    preferred_platform = str(platform_hint or "youtube").strip().lower()
+    if preferred_platform not in {"youtube", "instagram", "tiktok"}:
+        preferred_platform = "youtube"
+
     latest_outcome_result = await db.execute(
         select(OutcomeMetric)
-        .where(OutcomeMetric.user_id == user_id)
+        .where(
+            OutcomeMetric.user_id == user_id,
+            OutcomeMetric.platform == preferred_platform,
+        )
         .order_by(OutcomeMetric.posted_at.desc(), OutcomeMetric.created_at.desc())
         .limit(1)
     )
@@ -225,7 +238,7 @@ async def _prediction_outcome_context(user_id: str, db: AsyncSession) -> Dict[st
         platform = latest_outcome.platform
     else:
         prediction_vs_actual = None
-        platform = "youtube"
+        platform = preferred_platform
 
     snapshot_result = await db.execute(
         select(CalibrationSnapshot)
@@ -354,27 +367,96 @@ async def _best_edited_variant_context(
     }
 
 
-async def _compute_competitor_signature(user_id: str, db: AsyncSession) -> str:
+def _build_optimizer_quick_actions(best_edited_variant: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
+    href = "/research?mode=optimizer"
+    if isinstance(best_edited_variant, dict):
+        source_item_id = str(best_edited_variant.get("source_item_id") or "").strip()
+        script_preview = str(best_edited_variant.get("script_preview") or "").strip()
+        if source_item_id:
+            href += f"&source_item_id={quote(source_item_id)}"
+        if script_preview:
+            topic_seed = script_preview.split(".")[0][:120].strip()
+            if topic_seed:
+                href += f"&topic={quote(topic_seed)}"
+
+    return [
+        {
+            "type": "generate_improved_variants",
+            "label": "Generate 3 improved variants now",
+            "href": href,
+        }
+    ]
+
+
+def _resolve_report_platform(
+    *,
+    performance_prediction: Optional[Dict[str, Any]],
+    audit_input: Optional[Dict[str, Any]],
+) -> str:
+    if isinstance(performance_prediction, dict):
+        candidate = str(performance_prediction.get("platform") or "").strip().lower()
+        if candidate in {"youtube", "instagram", "tiktok"}:
+            return candidate
+    if isinstance(audit_input, dict):
+        candidate = str(audit_input.get("platform") or "").strip().lower()
+        if candidate in {"youtube", "instagram", "tiktok"}:
+            return candidate
+    return "youtube"
+
+
+async def _compute_competitor_signature(
+    user_id: str,
+    db: AsyncSession,
+    platform: str = "youtube",
+) -> str:
+    platform_key = str(platform or "youtube").strip().lower()
+    if platform_key not in {"youtube", "instagram", "tiktok"}:
+        platform_key = "youtube"
+
     result = await db.execute(
         select(Competitor.external_id)
-        .where(Competitor.user_id == user_id, Competitor.platform == "youtube")
+        .where(Competitor.user_id == user_id, Competitor.platform == platform_key)
         .order_by(Competitor.external_id.asc())
     )
-    channel_ids = [str(value) for value in result.scalars().all() if value]
-    if not channel_ids:
-        return "none"
-    payload = json.dumps(channel_ids, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+    competitor_ids = [str(value) for value in result.scalars().all() if value]
+
+    dataset_bits: Dict[str, Any] = {
+        "platform": platform_key,
+        "competitors": competitor_ids,
+    }
+    if platform_key in {"instagram", "tiktok"}:
+        item_result = await db.execute(
+            select(ResearchItem.id)
+            .where(
+                ResearchItem.user_id == user_id,
+                ResearchItem.platform == platform_key,
+            )
+            .order_by(ResearchItem.id.asc())
+        )
+        dataset_bits["research_item_ids"] = [str(value) for value in item_result.scalars().all() if value]
+
+    payload = json.dumps(dataset_bits, separators=(",", ":"), ensure_ascii=True)
+    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()
+    return f"{platform_key}:{digest}"
 
 
-async def _get_or_refresh_blueprint(user_id: str, db: AsyncSession) -> Dict[str, Any]:
+async def _get_or_refresh_blueprint(
+    user_id: str,
+    db: AsyncSession,
+    platform: str = "youtube",
+) -> Dict[str, Any]:
+    platform_key = str(platform or "youtube").strip().lower()
+    if platform_key not in {"youtube", "instagram", "tiktok"}:
+        platform_key = "youtube"
+
     snapshot_result = await db.execute(select(BlueprintSnapshot).where(BlueprintSnapshot.user_id == user_id))
     snapshot = snapshot_result.scalar_one_or_none()
-    competitor_signature = await _compute_competitor_signature(user_id, db)
+    competitor_signature = await _compute_competitor_signature(user_id, db, platform=platform_key)
     ttl = timedelta(minutes=max(int(settings.BLUEPRINT_CACHE_TTL_MINUTES), 1))
     now = datetime.now(timezone.utc)
 
     cached_payload = snapshot.payload_json if snapshot and isinstance(snapshot.payload_json, dict) else None
+    cached_platform = str(cached_payload.get("dataset_summary", {}).get("platform", "")).strip().lower() if cached_payload else ""
     generated_at = snapshot.generated_at if snapshot else None
     is_stale = True
     if cached_payload and isinstance(generated_at, datetime):
@@ -386,12 +468,14 @@ async def _get_or_refresh_blueprint(user_id: str, db: AsyncSession) -> Dict[str,
         is_stale = (now - generated_at_utc) > ttl
     if snapshot and snapshot.competitor_signature != competitor_signature:
         is_stale = True
+    if cached_platform and cached_platform != platform_key:
+        is_stale = True
 
     if cached_payload and not is_stale:
         return cached_payload
 
     try:
-        fresh_blueprint = await generate_blueprint_service(user_id, db)
+        fresh_blueprint = await generate_blueprint_service(user_id, db, platform=platform_key)
         if not isinstance(fresh_blueprint, dict):
             raise ValueError("Blueprint service returned invalid payload.")
 
@@ -487,9 +571,14 @@ async def get_consolidated_report(user_id: str, audit_id: Optional[str], db: Asy
         if isinstance(raw_prediction, dict) and raw_prediction:
             performance_prediction = raw_prediction
 
+    report_platform = _resolve_report_platform(
+        performance_prediction=performance_prediction,
+        audit_input=audit.input_json if audit and isinstance(audit.input_json, dict) else None,
+    )
+
     # 3. Fetch Competitor Blueprint (Phase E)
-    blueprint = await _get_or_refresh_blueprint(user_id, db)
-    outcome_context = await _prediction_outcome_context(user_id, db)
+    blueprint = await _get_or_refresh_blueprint(user_id, db, platform=report_platform)
+    outcome_context = await _prediction_outcome_context(user_id, db, platform_hint=report_platform)
     best_edited_variant = await _best_edited_variant_context(
         user_id=user_id,
         audit_id=audit.id if audit else audit_id,
@@ -519,12 +608,6 @@ async def get_consolidated_report(user_id: str, audit_id: Optional[str], db: Asy
         "prediction_vs_actual": outcome_context.get("prediction_vs_actual"),
         "calibration_confidence": outcome_context.get("calibration_confidence"),
         "best_edited_variant": best_edited_variant,
-        "quick_actions": [
-            {
-                "type": "generate_improved_variants",
-                "label": "Generate 3 improved variants now",
-                "href": "/research?mode=optimizer",
-            }
-        ],
+        "quick_actions": _build_optimizer_quick_actions(best_edited_variant),
         "recommendations": _normalize_recommendations(diagnosis, video_analysis, performance_prediction, blueprint),
     }

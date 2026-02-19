@@ -136,6 +136,40 @@ export interface SyncYouTubeSessionResponse {
     thumbnail_url?: string;
 }
 
+export interface SyncSocialConnectionRequest {
+    platform: "instagram" | "tiktok";
+    handle: string;
+    external_id?: string;
+    display_name?: string;
+    follower_count?: string;
+    profile_picture_url?: string;
+    access_token?: string;
+    refresh_token?: string;
+    expires_at?: number;
+    scope?: string;
+    user_id?: string;
+    email: string;
+    name?: string;
+    picture?: string;
+}
+
+export interface SyncSocialConnectionResponse {
+    user_id: string;
+    email: string;
+    platform: "instagram" | "tiktok";
+    connected: boolean;
+    session_token: string;
+    session_expires_at: number;
+    profile: {
+        platform: string;
+        external_id?: string;
+        handle?: string;
+        display_name?: string;
+        subscriber_count?: string;
+        profile_picture_url?: string;
+    };
+}
+
 export interface CurrentUserResponse {
     user_id: string;
     email: string;
@@ -147,6 +181,21 @@ export interface CurrentUserResponse {
     channel_handle?: string;
     subscriber_count?: string;
     thumbnail_url?: string;
+    instagram_connected?: boolean;
+    tiktok_connected?: boolean;
+    connected_platforms?: {
+        youtube: boolean;
+        instagram: boolean;
+        tiktok: boolean;
+    };
+    profiles?: Array<{
+        platform: "youtube" | "instagram" | "tiktok";
+        external_id?: string;
+        handle?: string;
+        display_name?: string;
+        subscriber_count?: string;
+        profile_picture_url?: string;
+    }>;
 }
 
 export async function syncYouTubeSession(payload: SyncYouTubeSessionRequest): Promise<SyncYouTubeSessionResponse> {
@@ -161,6 +210,16 @@ export async function syncYouTubeSession(payload: SyncYouTubeSessionRequest): Pr
 
 export async function getCurrentUserProfile(): Promise<CurrentUserResponse> {
     return fetchApi<CurrentUserResponse>("/auth/me");
+}
+
+export async function syncSocialConnection(payload: SyncSocialConnectionRequest): Promise<SyncSocialConnectionResponse> {
+    const result = await fetchApi<SyncSocialConnectionResponse>("/auth/sync/social", {
+        method: "POST",
+        body: payload,
+    });
+    setCurrentUserId(result.user_id);
+    setBackendSessionToken(result.session_token);
+    return result;
 }
 
 export async function logoutBackendSession(): Promise<void> {
@@ -200,12 +259,15 @@ export interface Competitor {
     id: string;
     channel_id: string;
     title: string;
+    platform: "youtube" | "instagram" | "tiktok";
     custom_url?: string;
     subscriber_count?: number | string;
     video_count?: number;
     thumbnail_url?: string;
     created_at: string;
 }
+
+export type CompetitorAnalysisPlatform = "youtube" | "instagram" | "tiktok";
 
 export async function resolveChannel(url: string): Promise<{ channel_id?: string; title?: string; error?: string }> {
     return fetchApi("/youtube/resolve", {
@@ -407,10 +469,38 @@ export type CompetitorSuggestionSortBy =
     | "view_count";
 export type CompetitorSuggestionSortDirection = "desc" | "asc";
 
-export async function generateBlueprint(userId?: string): Promise<BlueprintResult> {
+export interface SeriesCalendarEpisode {
+    episode_number: number;
+    working_title: string;
+    publish_date: string;
+    status: "planned" | "drafted" | "published";
+    checklist: string[];
+}
+
+export interface SeriesCalendarResult {
+    series_title: string;
+    platform: "youtube_shorts" | "instagram_reels" | "tiktok" | "youtube_long";
+    cadence_days: number;
+    episodes: SeriesCalendarEpisode[];
+}
+
+export interface NextSeriesEpisodeResult {
+    series_title: string;
+    platform: "youtube_shorts" | "instagram_reels" | "tiktok" | "youtube_long";
+    episode_number: number;
+    working_title: string;
+    hook_line: string;
+    outline: string[];
+    cta: string;
+}
+
+export async function generateBlueprint(
+    userId?: string,
+    platform: CompetitorAnalysisPlatform = "youtube"
+): Promise<BlueprintResult> {
     return fetchApi("/competitors/blueprint", {
         method: "POST",
-        body: { user_id: resolveUserId(userId) },
+        body: { user_id: resolveUserId(userId), platform },
     });
 }
 
@@ -501,10 +591,42 @@ export interface ViralScriptResult {
     };
 }
 
-export async function getCompetitorSeriesInsights(userId?: string): Promise<SeriesIntelligence> {
+export async function getCompetitorSeriesInsights(
+    userId?: string,
+    platform: CompetitorAnalysisPlatform = "youtube"
+): Promise<SeriesIntelligence> {
     return fetchApi<SeriesIntelligence>("/competitors/series", {
         method: "POST",
-        body: { user_id: resolveUserId(userId) },
+        body: { user_id: resolveUserId(userId), platform },
+    });
+}
+
+export interface ImportCompetitorsFromResearchResponse {
+    platform: "instagram" | "tiktok";
+    scanned_items: number;
+    candidate_creators: number;
+    imported_count: number;
+    skipped_existing: number;
+    skipped_low_volume: number;
+    competitors: Competitor[];
+}
+
+export async function importCompetitorsFromResearch(payload: {
+    platform: "instagram" | "tiktok";
+    niche?: string;
+    minItemsPerCreator?: number;
+    topN?: number;
+    userId?: string;
+}): Promise<ImportCompetitorsFromResearchResponse> {
+    return fetchApi<ImportCompetitorsFromResearchResponse>("/competitors/import_from_research", {
+        method: "POST",
+        body: {
+            user_id: resolveUserId(payload.userId),
+            platform: payload.platform,
+            niche: payload.niche,
+            min_items_per_creator: payload.minItemsPerCreator,
+            top_n: payload.topN,
+        },
     });
 }
 
@@ -544,6 +666,7 @@ export async function recommendCompetitors(
     niche: string,
     options: {
         userId?: string;
+        platform?: "youtube" | "instagram" | "tiktok";
         limit?: number;
         page?: number;
         sortBy?: CompetitorSuggestionSortBy;
@@ -556,6 +679,7 @@ export async function recommendCompetitors(
             method: "POST",
             body: {
                 niche,
+                platform: options.platform || "youtube",
                 user_id: resolveUserId(options.userId),
                 limit: options.limit ?? 8,
                 page: options.page ?? 1,
@@ -564,6 +688,71 @@ export async function recommendCompetitors(
             },
         }
     );
+}
+
+export async function addManualCompetitor(payload: {
+    platform: "youtube" | "instagram" | "tiktok";
+    handle: string;
+    display_name?: string;
+    external_id?: string;
+    subscriber_count?: number;
+    thumbnail_url?: string;
+    userId?: string;
+}): Promise<Competitor> {
+    return fetchApi<Competitor>("/competitors/manual", {
+        method: "POST",
+        body: {
+            platform: payload.platform,
+            handle: payload.handle,
+            display_name: payload.display_name,
+            external_id: payload.external_id,
+            subscriber_count: payload.subscriber_count,
+            thumbnail_url: payload.thumbnail_url,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export async function buildSeriesCalendar(payload: {
+    seriesTitle: string;
+    platform: "youtube_shorts" | "instagram_reels" | "tiktok" | "youtube_long";
+    startDate: string;
+    cadenceDays: number;
+    episodes: Array<Record<string, any>>;
+    userId?: string;
+}): Promise<SeriesCalendarResult> {
+    return fetchApi<SeriesCalendarResult>("/competitors/series/calendar", {
+        method: "POST",
+        body: {
+            user_id: resolveUserId(payload.userId),
+            series_title: payload.seriesTitle,
+            platform: payload.platform,
+            start_date: payload.startDate,
+            cadence_days: payload.cadenceDays,
+            episodes: payload.episodes,
+        },
+    });
+}
+
+export async function getNextSeriesEpisode(payload: {
+    seriesTitle: string;
+    platform: "youtube_shorts" | "instagram_reels" | "tiktok" | "youtube_long";
+    completedEpisodes: number;
+    objective: string;
+    audience: string;
+    userId?: string;
+}): Promise<NextSeriesEpisodeResult> {
+    return fetchApi<NextSeriesEpisodeResult>("/competitors/series/next_episode", {
+        method: "POST",
+        body: {
+            user_id: resolveUserId(payload.userId),
+            series_title: payload.seriesTitle,
+            platform: payload.platform,
+            completed_episodes: payload.completedEpisodes,
+            objective: payload.objective,
+            audience: payload.audience,
+        },
+    });
 }
 
 export interface DiagnosisResult {
@@ -578,6 +767,65 @@ export async function getChannelDiagnosis(channelId: string): Promise<DiagnosisR
     return fetchApi<DiagnosisResult>(`/analysis/diagnose/channel/${channelId}`);
 }
 
+export interface PlatformMetricsIngestRecord {
+    platform: "youtube" | "instagram" | "tiktok";
+    video_external_id: string;
+    video_url?: string;
+    title?: string;
+    published_at?: string;
+    duration_seconds?: number;
+    views?: number;
+    likes?: number;
+    comments?: number;
+    shares?: number;
+    saves?: number;
+    watch_time_hours?: number;
+    avg_view_duration_s?: number;
+    ctr?: number;
+    retention_points?: Array<{ time: number; retention: number }>;
+    user_id?: string;
+}
+
+export interface PlatformMetricsIngestResponse {
+    ingested: boolean;
+    video_id: string;
+    metrics_id: string;
+    metric_coverage: Record<string, string>;
+}
+
+export interface PlatformMetricsCsvIngestResponse {
+    ingested: boolean;
+    processed_rows: number;
+    successful_rows: number;
+    failed_rows: number;
+    failures: Array<Record<string, any>>;
+}
+
+export async function ingestPlatformMetrics(payload: PlatformMetricsIngestRecord): Promise<PlatformMetricsIngestResponse> {
+    return fetchApi<PlatformMetricsIngestResponse>("/analysis/ingest/platform_metrics", {
+        method: "POST",
+        body: {
+            ...payload,
+            user_id: resolveUserId(payload.user_id),
+        },
+    });
+}
+
+export async function ingestPlatformMetricsCsv(
+    file: File,
+    options: {
+        platform: "youtube" | "instagram" | "tiktok";
+        userId?: string;
+    }
+): Promise<PlatformMetricsCsvIngestResponse> {
+    const userId = resolveUserId(options.userId);
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("platform", options.platform);
+    formData.append("user_id", userId);
+    return fetchFormApi<PlatformMetricsCsvIngestResponse>("/analysis/ingest/platform_metrics_csv", formData);
+}
+
 // ==================== Audit APIs ====================
 
 export interface RetentionPoint {
@@ -587,6 +835,7 @@ export interface RetentionPoint {
 
 export interface RunAuditRequest {
     source_mode: "url" | "upload";
+    platform?: "youtube" | "instagram" | "tiktok";
     video_url?: string;
     upload_id?: string;
     retention_points?: RetentionPoint[];
@@ -909,6 +1158,9 @@ export interface ResearchItem {
         saves: number;
     };
     media_meta: Record<string, any>;
+    tags?: string[];
+    pinned?: boolean;
+    archived?: boolean;
     published_at?: string | null;
     created_at?: string | null;
     collection_id?: string | null;
@@ -987,6 +1239,10 @@ export async function importResearchCsv(
 export async function searchResearchItems(payload: {
     platform?: "youtube" | "instagram" | "tiktok";
     query?: string;
+    collection_id?: string;
+    include_archived?: boolean;
+    pinned_only?: boolean;
+    tags?: string[];
     sort_by?: "created_at" | "posted_at" | "views" | "likes" | "comments" | "shares" | "saves";
     sort_direction?: "asc" | "desc";
     timeframe?: "24h" | "7d" | "30d" | "90d" | "all";
@@ -999,6 +1255,10 @@ export async function searchResearchItems(payload: {
         body: {
             platform: payload.platform,
             query: payload.query || "",
+            collection_id: payload.collection_id,
+            include_archived: payload.include_archived || false,
+            pinned_only: payload.pinned_only || false,
+            tags: payload.tags,
             sort_by: payload.sort_by || "created_at",
             sort_direction: payload.sort_direction || "desc",
             timeframe: payload.timeframe || "all",
@@ -1017,9 +1277,58 @@ export async function listResearchCollections(userId?: string): Promise<Research
     return response.collections || [];
 }
 
+export async function createResearchCollection(payload: {
+    name: string;
+    platform?: "mixed" | "youtube" | "instagram" | "tiktok";
+    description?: string;
+    userId?: string;
+}): Promise<ResearchCollection> {
+    return fetchApi<ResearchCollection>("/research/collections", {
+        method: "POST",
+        body: {
+            name: payload.name,
+            platform: payload.platform || "mixed",
+            description: payload.description,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
 export async function getResearchItem(itemId: string, userId?: string): Promise<ResearchItem> {
     const qUserId = resolveUserId(userId);
     return fetchApi<ResearchItem>(`/research/items/${safeEncode(itemId)}?user_id=${safeEncode(qUserId)}`);
+}
+
+export async function moveResearchItem(payload: {
+    itemId: string;
+    collectionId: string;
+    userId?: string;
+}): Promise<ResearchItem> {
+    return fetchApi<ResearchItem>(`/research/items/${safeEncode(payload.itemId)}/move`, {
+        method: "POST",
+        body: {
+            collection_id: payload.collectionId,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export async function updateResearchItemMeta(payload: {
+    itemId: string;
+    tags?: string[];
+    pinned?: boolean;
+    archived?: boolean;
+    userId?: string;
+}): Promise<ResearchItem> {
+    return fetchApi<ResearchItem>(`/research/items/${safeEncode(payload.itemId)}/meta`, {
+        method: "POST",
+        body: {
+            tags: payload.tags,
+            pinned: payload.pinned,
+            archived: payload.archived,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
 }
 
 export async function exportResearchCollection(payload: {
@@ -1332,6 +1641,14 @@ export async function getOutcomesSummary(payload: {
     const qUserId = resolveUserId(payload.userId);
     const platformPart = payload.platform ? `&platform=${safeEncode(payload.platform)}` : "";
     return fetchApi(`/outcomes/summary?user_id=${safeEncode(qUserId)}${platformPart}`);
+}
+
+export async function recalibrateOutcomes(): Promise<{
+    refreshed: number;
+    skipped: number;
+    errors: string[];
+}> {
+    return fetchApi("/outcomes/recalibrate", { method: "POST" });
 }
 
 // ==================== Billing APIs ====================

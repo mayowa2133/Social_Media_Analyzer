@@ -4,18 +4,25 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
     addCompetitor,
+    addManualCompetitor,
+    buildSeriesCalendar,
+    CompetitorAnalysisPlatform,
     BlueprintResult,
     CompetitorSuggestionSortBy,
     CompetitorSuggestionSortDirection,
     Competitor,
+    getNextSeriesEpisode,
     generateSeriesPlan,
     generateViralScript,
     generateBlueprint,
     getCompetitorSeriesInsights,
     getCompetitors,
+    importCompetitorsFromResearch,
+    NextSeriesEpisodeResult,
     recommendCompetitors,
     RecommendedCompetitor,
     removeCompetitor,
+    SeriesCalendarResult,
     SeriesIntelligence,
     SeriesPlanResult,
     ViralScriptResult,
@@ -41,6 +48,8 @@ const SUGGESTION_PAGE_SIZE = 8;
 export default function CompetitorsPage() {
     const [competitors, setCompetitors] = useState<Competitor[]>([]);
     const [channelUrl, setChannelUrl] = useState("");
+    const [competitorPlatform, setCompetitorPlatform] = useState<"youtube" | "instagram" | "tiktok">("youtube");
+    const [analysisPlatform, setAnalysisPlatform] = useState<CompetitorAnalysisPlatform>("youtube");
     const [loading, setLoading] = useState(true);
     const [adding, setAdding] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -53,12 +62,16 @@ export default function CompetitorsPage() {
     const [suggesting, setSuggesting] = useState(false);
     const [suggestionError, setSuggestionError] = useState<string | null>(null);
     const [hasRequestedSuggestions, setHasRequestedSuggestions] = useState(false);
+    const [suggestionPlatform, setSuggestionPlatform] = useState<"youtube" | "instagram" | "tiktok">("youtube");
     const [suggestionSortKey, setSuggestionSortKey] = useState<CompetitorSuggestionSortBy>("subscriber_count");
     const [sortDirection, setSortDirection] = useState<CompetitorSuggestionSortDirection>("desc");
     const [suggestionPage, setSuggestionPage] = useState(1);
     const [suggestionLimit, setSuggestionLimit] = useState(SUGGESTION_PAGE_SIZE);
     const [suggestionTotalCount, setSuggestionTotalCount] = useState(0);
     const [suggestionHasMore, setSuggestionHasMore] = useState(false);
+    const [importingFromResearch, setImportingFromResearch] = useState(false);
+    const [importNiche, setImportNiche] = useState("");
+    const [importStatus, setImportStatus] = useState<string | null>(null);
 
     const [seriesInsights, setSeriesInsights] = useState<SeriesIntelligence | null>(null);
     const [loadingSeries, setLoadingSeries] = useState(false);
@@ -74,6 +87,14 @@ export default function CompetitorsPage() {
     const [seriesPlan, setSeriesPlan] = useState<SeriesPlanResult | null>(null);
     const [planningSeries, setPlanningSeries] = useState(false);
     const [seriesPlanError, setSeriesPlanError] = useState<string | null>(null);
+    const [calendarStartDate, setCalendarStartDate] = useState(() => new Date().toISOString().slice(0, 10));
+    const [calendarCadenceDays, setCalendarCadenceDays] = useState(2);
+    const [seriesCalendar, setSeriesCalendar] = useState<SeriesCalendarResult | null>(null);
+    const [buildingCalendar, setBuildingCalendar] = useState(false);
+    const [completedEpisodes, setCompletedEpisodes] = useState(0);
+    const [nextEpisode, setNextEpisode] = useState<NextSeriesEpisodeResult | null>(null);
+    const [generatingNextEpisode, setGeneratingNextEpisode] = useState(false);
+    const [seriesExecutionError, setSeriesExecutionError] = useState<string | null>(null);
 
     const [scriptPlatform, setScriptPlatform] = useState<"youtube_shorts" | "instagram_reels" | "tiktok" | "youtube_long">("youtube_shorts");
     const [scriptTopic, setScriptTopic] = useState("AI News hook formulas");
@@ -91,12 +112,26 @@ export default function CompetitorsPage() {
     }, []);
 
     useEffect(() => {
+        if (loading) {
+            return;
+        }
+        if (competitors.some((item) => item.platform === analysisPlatform)) {
+            void fetchSeriesInsights(analysisPlatform);
+        } else {
+            setSeriesInsights(null);
+            setSeriesTemplateKey("");
+            setScriptTemplateKey("");
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [analysisPlatform]);
+
+    useEffect(() => {
         if (!hasRequestedSuggestions || !suggestionNiche.trim()) {
             return;
         }
         setSuggestionPage(1);
         void fetchSuggestedCompetitors(suggestionNiche, 1);
-    }, [suggestionSortKey, sortDirection]);
+    }, [suggestionSortKey, sortDirection, suggestionPlatform]);
 
     useEffect(() => {
         const candidates = seriesInsights?.series || blueprint?.series_intelligence?.series || [];
@@ -115,13 +150,17 @@ export default function CompetitorsPage() {
         }
     }, [seriesInsights, blueprint, seriesTemplateKey, scriptTemplateKey]);
 
+    function hasPlatformCompetitor(platform: CompetitorAnalysisPlatform, rows: Competitor[]) {
+        return rows.some((item) => item.platform === platform);
+    }
+
     async function fetchCompetitors() {
         try {
             const comps = await getCompetitors();
             setCompetitors(comps);
             setError(null);
-            if (comps.length > 0) {
-                await fetchSeriesInsights();
+            if (hasPlatformCompetitor(analysisPlatform, comps)) {
+                await fetchSeriesInsights(analysisPlatform);
             } else {
                 setSeriesInsights(null);
                 setSeriesTemplateKey("");
@@ -134,11 +173,11 @@ export default function CompetitorsPage() {
         }
     }
 
-    async function fetchSeriesInsights() {
+    async function fetchSeriesInsights(platform: CompetitorAnalysisPlatform = analysisPlatform) {
         setLoadingSeries(true);
         setSeriesError(null);
         try {
-            const response = await getCompetitorSeriesInsights();
+            const response = await getCompetitorSeriesInsights(undefined, platform);
             setSeriesInsights(response);
         } catch (err: any) {
             setSeriesError(err.message || "Failed to load competitor series insights");
@@ -165,6 +204,7 @@ export default function CompetitorsPage() {
         setHasRequestedSuggestions(true);
         try {
             const response = await recommendCompetitors(trimmed, {
+                platform: suggestionPlatform,
                 limit: SUGGESTION_PAGE_SIZE,
                 page,
                 sortBy: suggestionSortKey,
@@ -193,15 +233,23 @@ export default function CompetitorsPage() {
         setError(null);
 
         try {
-            const newCompetitor = await addCompetitor(channelUrl);
+            const newCompetitor = competitorPlatform === "youtube"
+                ? await addCompetitor(channelUrl)
+                : await addManualCompetitor({
+                    platform: competitorPlatform,
+                    handle: channelUrl,
+                });
             setCompetitors((prev) => [...prev, newCompetitor]);
             setChannelUrl("");
 
             const autoNiche = newCompetitor.title || channelUrl;
             setSuggestionNiche(autoNiche);
+            setSuggestionPlatform(competitorPlatform);
             setSuggestionPage(1);
             await fetchSuggestedCompetitors(autoNiche, 1);
-            await fetchSeriesInsights();
+            if (newCompetitor.platform === analysisPlatform) {
+                await fetchSeriesInsights(analysisPlatform);
+            }
         } catch (err: any) {
             setError(err.message || "Failed to add competitor");
         } finally {
@@ -214,8 +262,8 @@ export default function CompetitorsPage() {
             await removeCompetitor(id);
             const nextCompetitors = competitors.filter((c) => c.id !== id);
             setCompetitors(nextCompetitors);
-            if (nextCompetitors.length > 0) {
-                await fetchSeriesInsights();
+            if (hasPlatformCompetitor(analysisPlatform, nextCompetitors)) {
+                await fetchSeriesInsights(analysisPlatform);
             } else {
                 setSeriesInsights(null);
                 setSeriesTemplateKey("");
@@ -230,7 +278,7 @@ export default function CompetitorsPage() {
         setGenerating(true);
         setError(null);
         try {
-            const result = await generateBlueprint();
+            const result = await generateBlueprint(undefined, analysisPlatform);
             setBlueprint(result);
             if (result.series_intelligence) {
                 setSeriesInsights(result.series_intelligence);
@@ -239,6 +287,31 @@ export default function CompetitorsPage() {
             setError(err.message || "Failed to generate blueprint");
         } finally {
             setGenerating(false);
+        }
+    }
+
+    async function handleImportCompetitorsFromResearch() {
+        if (analysisPlatform === "youtube") {
+            setImportStatus("Use YouTube search recommendations or add channel URLs directly for YouTube.");
+            return;
+        }
+        setImportingFromResearch(true);
+        setImportStatus(null);
+        try {
+            const response = await importCompetitorsFromResearch({
+                platform: analysisPlatform,
+                niche: importNiche.trim() || undefined,
+                minItemsPerCreator: 2,
+                topN: 25,
+            });
+            setImportStatus(
+                `Imported ${response.imported_count} competitors (${response.skipped_existing} already tracked, ${response.skipped_low_volume} low volume).`
+            );
+            await fetchCompetitors();
+        } catch (err: any) {
+            setImportStatus(err.message || "Failed to import competitors from research.");
+        } finally {
+            setImportingFromResearch(false);
         }
     }
 
@@ -258,7 +331,16 @@ export default function CompetitorsPage() {
     async function handleAddSuggestedCompetitor(suggestion: RecommendedCompetitor) {
         setSuggestionError(null);
         try {
-            const created = await addCompetitor(toChannelUrl(suggestion));
+            const created = suggestionPlatform === "youtube"
+                ? await addCompetitor(toChannelUrl(suggestion))
+                : await addManualCompetitor({
+                    platform: suggestionPlatform,
+                    handle: suggestion.custom_url || suggestion.channel_id,
+                    display_name: suggestion.title,
+                    external_id: suggestion.channel_id,
+                    subscriber_count: suggestion.subscriber_count,
+                    thumbnail_url: suggestion.thumbnail_url,
+                });
             setCompetitors((prev) => {
                 const exists = prev.some((c) => c.channel_id === created.channel_id);
                 return exists ? prev : [...prev, created];
@@ -289,6 +371,7 @@ export default function CompetitorsPage() {
     async function handleGenerateSeriesPlan(e: React.FormEvent) {
         e.preventDefault();
         setSeriesPlanError(null);
+        setSeriesExecutionError(null);
         setPlanningSeries(true);
         try {
             const selectedTemplate =
@@ -308,11 +391,62 @@ export default function CompetitorsPage() {
             if (response.source_template?.series_key && !seriesTemplateKey) {
                 setSeriesTemplateKey(response.source_template.series_key);
             }
+            setSeriesCalendar(null);
+            setNextEpisode(null);
         } catch (err: any) {
             setSeriesPlanError(err.message || "Failed to generate series plan");
             setSeriesPlan(null);
         } finally {
             setPlanningSeries(false);
+        }
+    }
+
+    async function handleBuildSeriesCalendar() {
+        if (!seriesPlan) {
+            setSeriesExecutionError("Generate a series plan first.");
+            return;
+        }
+        setSeriesExecutionError(null);
+        setBuildingCalendar(true);
+        try {
+            const response = await buildSeriesCalendar({
+                seriesTitle: seriesPlan.series_title,
+                platform: seriesPlan.platform,
+                startDate: calendarStartDate,
+                cadenceDays: calendarCadenceDays,
+                episodes: seriesPlan.episodes,
+            });
+            setSeriesCalendar(response);
+        } catch (err: any) {
+            setSeriesExecutionError(err.message || "Failed to build series calendar");
+            setSeriesCalendar(null);
+        } finally {
+            setBuildingCalendar(false);
+        }
+    }
+
+    async function handleGenerateNextEpisode() {
+        const seriesTitle = seriesPlan?.series_title || seriesRows[0]?.series_key;
+        if (!seriesTitle) {
+            setSeriesExecutionError("Need a series plan or detected series first.");
+            return;
+        }
+        setSeriesExecutionError(null);
+        setGeneratingNextEpisode(true);
+        try {
+            const response = await getNextSeriesEpisode({
+                seriesTitle,
+                platform: seriesPlan?.platform || seriesPlatform,
+                completedEpisodes,
+                objective: seriesObjective,
+                audience: seriesAudience,
+            });
+            setNextEpisode(response);
+        } catch (err: any) {
+            setSeriesExecutionError(err.message || "Failed to generate next episode");
+            setNextEpisode(null);
+        } finally {
+            setGeneratingNextEpisode(false);
         }
     }
 
@@ -366,13 +500,22 @@ export default function CompetitorsPage() {
                         </nav>
                     </div>
                     <div className="hidden items-center gap-2 lg:flex">
+                        <select
+                            value={analysisPlatform}
+                            onChange={(e) => setAnalysisPlatform(e.target.value as CompetitorAnalysisPlatform)}
+                            className="rounded-xl border border-[#d5d5d5] bg-white px-3 py-1.5 text-xs text-[#444] focus:border-[#bbbbbb] focus:outline-none"
+                        >
+                            <option value="youtube">YouTube Analysis</option>
+                            <option value="instagram">Instagram Analysis</option>
+                            <option value="tiktok">TikTok Analysis</option>
+                        </select>
                         <button
                             type="button"
                             onClick={handleGenerateBlueprint}
-                            disabled={generating || competitors.length === 0}
+                            disabled={generating || !competitors.some((item) => item.platform === analysisPlatform)}
                             className="rounded-xl border border-[#d5d5d5] bg-white px-3 py-1.5 text-xs text-[#444] transition hover:bg-[#f2f2f2] disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                            {generating ? "Analyzing..." : "Generate Blueprint"}
+                            {generating ? "Analyzing..." : `Generate ${analysisPlatform} Blueprint`}
                         </button>
                     </div>
                 </header>
@@ -385,11 +528,25 @@ export default function CompetitorsPage() {
                                 Track channels in your niche and benchmark their winning patterns.
                             </p>
                             <form onSubmit={handleAddCompetitor} className="space-y-3">
+                                <select
+                                    value={competitorPlatform}
+                                    onChange={(e) => setCompetitorPlatform(e.target.value as "youtube" | "instagram" | "tiktok")}
+                                    className="w-full rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-sm text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                    disabled={adding}
+                                >
+                                    <option value="youtube">YouTube</option>
+                                    <option value="instagram">Instagram</option>
+                                    <option value="tiktok">TikTok</option>
+                                </select>
                                 <input
                                     type="text"
                                     value={channelUrl}
                                     onChange={(e) => setChannelUrl(e.target.value)}
-                                    placeholder="Paste YouTube channel URL or @handle..."
+                                    placeholder={
+                                        competitorPlatform === "youtube"
+                                            ? "Paste YouTube channel URL or @handle..."
+                                            : "Enter creator handle, e.g. @creator"
+                                    }
                                     className="w-full rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-sm text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
                                     disabled={adding}
                                 />
@@ -398,13 +555,44 @@ export default function CompetitorsPage() {
                                     disabled={adding || !channelUrl.trim()}
                                     className="w-full rounded-xl bg-[#1f1f1f] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#111] disabled:cursor-not-allowed disabled:bg-[#9e9e9e]"
                                 >
-                                    {adding ? "Adding..." : "Add"}
+                                    {adding ? "Adding..." : competitorPlatform === "youtube" ? "Add YouTube Competitor" : "Add Manual Competitor"}
                                 </button>
                             </form>
                             <p className="mt-3 text-[11px] text-[#7b7b7b]">
-                                Supports: youtube.com/channel/..., youtube.com/@handle, youtube.com/c/...
+                                {competitorPlatform === "youtube"
+                                    ? "Supports: youtube.com/channel/..., youtube.com/@handle, youtube.com/c/..."
+                                    : "Use public handle for manual tracking (metadata-based parity mode)."}
                             </p>
                         </div>
+
+                        {analysisPlatform !== "youtube" && (
+                            <div className="mt-4 rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                                <h3 className="mb-2 text-sm font-semibold text-[#222]">
+                                    Import {analysisPlatform === "instagram" ? "Instagram" : "TikTok"} Competitors
+                                </h3>
+                                <p className="mb-3 text-xs text-[#6d6d6d]">
+                                    Auto-create tracked competitors from your Research library creator metadata.
+                                </p>
+                                <input
+                                    type="text"
+                                    value={importNiche}
+                                    onChange={(e) => setImportNiche(e.target.value)}
+                                    placeholder="Optional niche filter (e.g. AI News)"
+                                    className="w-full rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-sm text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => void handleImportCompetitorsFromResearch()}
+                                    disabled={importingFromResearch}
+                                    className="mt-3 w-full rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-sm font-medium text-[#2f2f2f] hover:bg-[#efefef] disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                    {importingFromResearch ? "Importing..." : "Import From Research"}
+                                </button>
+                                {importStatus && (
+                                    <p className="mt-2 text-[11px] text-[#6d6d6d]">{importStatus}</p>
+                                )}
+                            </div>
+                        )}
 
                         {error && (
                             <div className="mt-4 rounded-xl border border-[#e3c4c4] bg-[#fff1f1] px-3 py-2 text-xs text-[#7f3a3a]">
@@ -414,13 +602,22 @@ export default function CompetitorsPage() {
 
                         <div className="mt-4 rounded-2xl border border-[#dcdcdc] bg-white p-4">
                             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#676767]">Actions</h3>
+                            <select
+                                value={analysisPlatform}
+                                onChange={(e) => setAnalysisPlatform(e.target.value as CompetitorAnalysisPlatform)}
+                                className="mb-3 w-full rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-sm text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                            >
+                                <option value="youtube">YouTube Analysis</option>
+                                <option value="instagram">Instagram Analysis</option>
+                                <option value="tiktok">TikTok Analysis</option>
+                            </select>
                             <div className="space-y-2">
                                 <button
                                     onClick={handleGenerateBlueprint}
-                                    disabled={generating || competitors.length === 0}
+                                    disabled={generating || !competitors.some((item) => item.platform === analysisPlatform)}
                                     className="w-full rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-sm font-medium text-[#2f2f2f] hover:bg-[#efefef] disabled:cursor-not-allowed disabled:opacity-50"
                                 >
-                                    {generating ? "Generating..." : "Generate Strategy Blueprint"}
+                                    {generating ? "Generating..." : `Generate ${analysisPlatform} Strategy Blueprint`}
                                 </button>
                                 <Link
                                     href="/audit/new"
@@ -462,7 +659,7 @@ export default function CompetitorsPage() {
                                 </p>
                             </div>
                             <div className="rounded-full border border-[#d5d5d5] bg-white px-3 py-1 text-xs text-[#666]">
-                                {competitors.length} tracked channels
+                                {competitors.filter((item) => item.platform === analysisPlatform).length} tracked {analysisPlatform} channels
                             </div>
                         </div>
 
@@ -486,18 +683,24 @@ export default function CompetitorsPage() {
                         <div className="mb-6 grid gap-4 2xl:grid-cols-2">
                             <div className="rounded-3xl border border-[#dcdcdc] bg-white p-5 shadow-[0_12px_30px_rgba(0,0,0,0.05)]">
                                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                                    <h2 className="text-lg font-bold text-[#1f1f1f]">Competitor Series Radar</h2>
+                                    <h2 className="text-lg font-bold text-[#1f1f1f]">
+                                        {analysisPlatform === "youtube"
+                                            ? "YouTube Series Radar"
+                                            : analysisPlatform === "instagram"
+                                                ? "Instagram Series Radar"
+                                                : "TikTok Series Radar"}
+                                    </h2>
                                     <button
                                         type="button"
-                                        onClick={() => void fetchSeriesInsights()}
-                                        disabled={loadingSeries || competitors.length === 0}
+                                        onClick={() => void fetchSeriesInsights(analysisPlatform)}
+                                        disabled={loadingSeries || !competitors.some((item) => item.platform === analysisPlatform)}
                                         className="rounded-lg border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-1.5 text-xs text-[#444] hover:bg-[#efefef] disabled:cursor-not-allowed disabled:opacity-50"
                                     >
                                         {loadingSeries ? "Refreshing..." : "Refresh"}
                                     </button>
                                 </div>
                                 <p className="mb-3 text-xs text-[#6d6d6d]">
-                                    Detects recurring content series across tracked competitors so you can model repeatable audience loops.
+                                    Detects recurring content series across tracked {analysisPlatform} competitors so you can model repeatable audience loops.
                                 </p>
                                 {seriesError && (
                                     <div className="mb-3 rounded-xl border border-[#e3c4c4] bg-[#fff1f1] px-3 py-2 text-xs text-[#7f3a3a]">
@@ -657,6 +860,78 @@ export default function CompetitorsPage() {
                                         </div>
                                     </div>
                                 )}
+
+                                <div className="mt-4 rounded-xl border border-[#dfdfdf] bg-[#fafafa] p-3">
+                                    <p className="text-xs font-semibold text-[#222]">Series Execution</p>
+                                    <p className="mt-1 text-[11px] text-[#666]">
+                                        Turn series plans into publish dates and generate the next episode brief.
+                                    </p>
+                                    <div className="mt-2 grid grid-cols-2 gap-2">
+                                        <input
+                                            type="date"
+                                            value={calendarStartDate}
+                                            onChange={(e) => setCalendarStartDate(e.target.value)}
+                                            className="rounded-lg border border-[#d8d8d8] bg-white px-2 py-1 text-[11px] text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                        />
+                                        <input
+                                            type="number"
+                                            min={1}
+                                            max={14}
+                                            value={calendarCadenceDays}
+                                            onChange={(e) => setCalendarCadenceDays(Math.min(14, Math.max(1, Number(e.target.value) || 1)))}
+                                            className="rounded-lg border border-[#d8d8d8] bg-white px-2 py-1 text-[11px] text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                        />
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => void handleBuildSeriesCalendar()}
+                                        disabled={buildingCalendar || !seriesPlan}
+                                        className="mt-2 w-full rounded-lg border border-[#d9d9d9] bg-white px-2 py-1.5 text-[11px] text-[#444] disabled:opacity-50"
+                                    >
+                                        {buildingCalendar ? "Building calendar..." : "Build Calendar"}
+                                    </button>
+                                    <div className="mt-2 grid grid-cols-[1fr_auto] gap-2">
+                                        <input
+                                            type="number"
+                                            min={0}
+                                            max={200}
+                                            value={completedEpisodes}
+                                            onChange={(e) => setCompletedEpisodes(Math.max(0, Number(e.target.value) || 0))}
+                                            placeholder="Completed episodes"
+                                            className="rounded-lg border border-[#d8d8d8] bg-white px-2 py-1 text-[11px] text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleGenerateNextEpisode()}
+                                            disabled={generatingNextEpisode}
+                                            className="rounded-lg border border-[#d9d9d9] bg-white px-2 py-1 text-[11px] text-[#444] disabled:opacity-50"
+                                        >
+                                            {generatingNextEpisode ? "Generating..." : "Next Episode"}
+                                        </button>
+                                    </div>
+                                    {seriesExecutionError && (
+                                        <p className="mt-2 text-[11px] text-[#7f3a3a]">{seriesExecutionError}</p>
+                                    )}
+                                    {seriesCalendar?.episodes?.length ? (
+                                        <div className="mt-2 space-y-1">
+                                            {seriesCalendar.episodes.slice(0, 4).map((episode) => (
+                                                <div key={episode.episode_number} className="rounded-lg border border-[#e3e3e3] bg-white p-2">
+                                                    <p className="text-[11px] font-semibold text-[#202020]">
+                                                        Ep {episode.episode_number}: {episode.working_title}
+                                                    </p>
+                                                    <p className="text-[10px] text-[#777]">Publish {episode.publish_date}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : null}
+                                    {nextEpisode && (
+                                        <div className="mt-2 rounded-lg border border-[#e3e3e3] bg-white p-2">
+                                            <p className="text-[11px] font-semibold text-[#202020]">{nextEpisode.working_title}</p>
+                                            <p className="mt-1 text-[11px] text-[#666]">{nextEpisode.hook_line}</p>
+                                            <p className="mt-1 text-[10px] text-[#777]">{nextEpisode.cta}</p>
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         </div>
 
@@ -825,8 +1100,9 @@ export default function CompetitorsPage() {
                                         <div className="min-w-0 flex-1">
                                             <h3 className="truncate text-sm font-semibold text-[#232323]">{comp.title}</h3>
                                             <p className="text-xs text-[#727272]">
-                                                {parseInt(String(comp.subscriber_count || "0"), 10)?.toLocaleString() || "?"} subscribers
+                                                {parseInt(String(comp.subscriber_count || "0"), 10)?.toLocaleString() || "?"} {comp.platform === "youtube" ? "subscribers" : "audience proxy"}
                                             </p>
+                                            <p className="text-xs uppercase tracking-wide text-[#8a8a8a]">{comp.platform}</p>
                                             <p className="text-xs text-[#8a8a8a]">
                                                 Added {new Date(comp.created_at).toLocaleDateString()}
                                             </p>
@@ -856,15 +1132,30 @@ export default function CompetitorsPage() {
                         <div className="rounded-2xl border border-[#dcdcdc] bg-white p-4">
                             <h2 className="mb-2 text-sm font-semibold text-[#222]">Suggested Competitors</h2>
                             <p className="mb-3 text-xs text-[#6d6d6d]">
-                                Enter a niche (for example, AI News) to discover channels with strong metrics.
+                                Enter a niche (for example, AI News) to discover high-performing competitors.
                             </p>
 
                             <form onSubmit={handleFindSuggestions} className="space-y-3">
+                                <select
+                                    value={suggestionPlatform}
+                                    onChange={(e) => {
+                                        setSuggestionPlatform(e.target.value as "youtube" | "instagram" | "tiktok");
+                                        setSuggestedCompetitors([]);
+                                        setHasRequestedSuggestions(false);
+                                        setSuggestionPage(1);
+                                    }}
+                                    className="w-full rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-sm text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                    disabled={suggesting}
+                                >
+                                    <option value="youtube">YouTube</option>
+                                    <option value="instagram">Instagram</option>
+                                    <option value="tiktok">TikTok</option>
+                                </select>
                                 <input
                                     type="text"
                                     value={suggestionNiche}
                                     onChange={(e) => setSuggestionNiche(e.target.value)}
-                                    placeholder="Enter niche, e.g. AI News"
+                                    placeholder={`Enter ${suggestionPlatform} niche, e.g. AI News`}
                                     className="w-full rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-sm text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
                                     disabled={suggesting}
                                 />
@@ -951,7 +1242,7 @@ export default function CompetitorsPage() {
                                             </div>
 
                                             <p className="mb-3 text-[11px] text-[#666]">
-                                                {formatMetric(suggestion.subscriber_count)} subs · {formatMetric(suggestion.video_count)} videos · {formatMetric(suggestion.avg_views_per_video)} avg views/video
+                                                {formatMetric(suggestion.subscriber_count)} {suggestionPlatform === "youtube" ? "subs" : "engagement proxy"} · {formatMetric(suggestion.video_count)} posts · {formatMetric(suggestion.avg_views_per_video)} avg views/post
                                             </p>
 
                                             <button

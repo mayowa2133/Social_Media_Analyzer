@@ -13,6 +13,7 @@ from sqlalchemy.future import select
 
 from database import get_db
 from models.competitor import Competitor
+from models.research_item import ResearchItem
 from models.user import User
 from routers.auth_scope import AuthContext, ensure_user_scope, get_auth_context
 from routers.rate_limit import rate_limit
@@ -26,6 +27,16 @@ logger = logging.getLogger(__name__)
 
 class AddCompetitorRequest(BaseModel):
     channel_url: str
+    user_id: Optional[str] = None
+
+
+class AddManualCompetitorRequest(BaseModel):
+    platform: Literal["youtube", "instagram", "tiktok"]
+    handle: str
+    display_name: Optional[str] = None
+    external_id: Optional[str] = None
+    subscriber_count: Optional[int] = 0
+    thumbnail_url: Optional[str] = None
     user_id: Optional[str] = None
 
 
@@ -43,10 +54,12 @@ class CompetitorResponse(BaseModel):
 
 class BlueprintRequest(BaseModel):
     user_id: Optional[str] = None
+    platform: Literal["youtube", "instagram", "tiktok"] = "youtube"
 
 
 class RecommendCompetitorsRequest(BaseModel):
     niche: str
+    platform: Literal["youtube", "instagram", "tiktok"] = "youtube"
     user_id: Optional[str] = None
     limit: int = Field(default=8, ge=1, le=20)
     page: int = Field(default=1, ge=1)
@@ -77,6 +90,25 @@ class RecommendCompetitorsResponse(BaseModel):
 
 class SeriesInsightsRequest(BaseModel):
     user_id: Optional[str] = None
+    platform: Literal["youtube", "instagram", "tiktok"] = "youtube"
+
+
+class ImportCompetitorsFromResearchRequest(BaseModel):
+    platform: Literal["instagram", "tiktok"]
+    niche: Optional[str] = None
+    min_items_per_creator: int = Field(default=2, ge=1, le=20)
+    top_n: int = Field(default=25, ge=1, le=100)
+    user_id: Optional[str] = None
+
+
+class ImportCompetitorsFromResearchResponse(BaseModel):
+    platform: str
+    scanned_items: int
+    candidate_creators: int
+    imported_count: int
+    skipped_existing: int
+    skipped_low_volume: int
+    competitors: List[CompetitorResponse]
 
 
 class SeriesPlanRequest(BaseModel):
@@ -88,6 +120,24 @@ class SeriesPlanRequest(BaseModel):
     platform: Literal["youtube_shorts", "instagram_reels", "tiktok", "youtube_long"] = "youtube_shorts"
     episodes: int = Field(default=5, ge=3, le=12)
     template_series_key: Optional[str] = None
+
+
+class SeriesCalendarRequest(BaseModel):
+    user_id: Optional[str] = None
+    series_title: str
+    platform: Literal["youtube_shorts", "instagram_reels", "tiktok", "youtube_long"] = "youtube_shorts"
+    start_date: str
+    cadence_days: int = Field(default=2, ge=1, le=14)
+    episodes: List[Dict[str, Any]]
+
+
+class SeriesNextEpisodeRequest(BaseModel):
+    user_id: Optional[str] = None
+    series_title: str
+    platform: Literal["youtube_shorts", "instagram_reels", "tiktok", "youtube_long"] = "youtube_shorts"
+    completed_episodes: int = Field(default=0, ge=0, le=200)
+    objective: str = "increase retention and shares"
+    audience: str = "creators in your niche"
 
 
 class ViralScriptRequest(BaseModel):
@@ -175,6 +225,202 @@ async def add_competitor(
         raise HTTPException(status_code=500, detail="Failed to add competitor.")
 
 
+@router.post("/manual", response_model=CompetitorResponse)
+async def add_manual_competitor(
+    request: AddManualCompetitorRequest,
+    _rate_limit: None = Depends(rate_limit("competitor_add_manual", limit=120, window_seconds=3600)),
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a manual competitor handle for Instagram/TikTok/YouTube parity research."""
+    scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
+    handle = request.handle.strip()
+    if not handle:
+        raise HTTPException(status_code=422, detail="handle is required")
+
+    normalized_handle = handle if handle.startswith("@") else f"@{handle}"
+    external_id = (request.external_id or normalized_handle).strip()
+    display_name = (request.display_name or normalized_handle).strip()
+
+    user_result = await db.execute(select(User).where(User.id == scoped_user_id))
+    user = user_result.scalar_one_or_none()
+    if not user:
+        user = User(id=scoped_user_id, email=f"{scoped_user_id}@local.invalid")
+        db.add(user)
+        await db.flush()
+
+    existing_result = await db.execute(
+        select(Competitor).where(
+            Competitor.user_id == scoped_user_id,
+            Competitor.platform == request.platform,
+            Competitor.external_id == external_id,
+        )
+    )
+    if existing_result.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Competitor already added")
+
+    row = Competitor(
+        id=str(uuid.uuid4()),
+        user_id=scoped_user_id,
+        platform=request.platform,
+        handle=normalized_handle,
+        external_id=external_id,
+        display_name=display_name,
+        profile_picture_url=request.thumbnail_url,
+        subscriber_count=str(max(int(request.subscriber_count or 0), 0)),
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return CompetitorResponse(
+        id=row.id,
+        channel_id=row.external_id,
+        title=row.display_name,
+        custom_url=row.handle,
+        subscriber_count=row.subscriber_count,
+        thumbnail_url=row.profile_picture_url,
+        created_at=str(row.created_at),
+        platform=row.platform,
+        video_count=None,
+    )
+
+
+@router.post("/import_from_research", response_model=ImportCompetitorsFromResearchResponse)
+async def import_competitors_from_research(
+    request: ImportCompetitorsFromResearchRequest,
+    _rate_limit: None = Depends(rate_limit("competitor_import_research", limit=40, window_seconds=3600)),
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Auto-create IG/TikTok competitors from imported research items."""
+    scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
+    niche_text = str(request.niche or "").strip().lower()
+
+    existing_result = await db.execute(
+        select(Competitor).where(
+            Competitor.user_id == scoped_user_id,
+            Competitor.platform == request.platform,
+        )
+    )
+    existing_competitors = existing_result.scalars().all()
+    existing_ids = {str(row.external_id) for row in existing_competitors if row.external_id}
+
+    items_result = await db.execute(
+        select(ResearchItem).where(
+            ResearchItem.user_id == scoped_user_id,
+            ResearchItem.platform == request.platform,
+        )
+    )
+    items = items_result.scalars().all()
+    scanned_items = len(items)
+
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for item in items:
+        text_blob = " ".join(
+            [
+                str(item.title or ""),
+                str(item.caption or ""),
+                str(item.creator_handle or ""),
+                str(item.creator_display_name or ""),
+            ]
+        ).lower()
+        if niche_text and niche_text not in text_blob:
+            continue
+        media_meta = item.media_meta_json if isinstance(item.media_meta_json, dict) else {}
+        creator_key = str(
+            item.creator_handle
+            or media_meta.get("creator_id")
+            or item.creator_display_name
+            or ""
+        ).strip()
+        if not creator_key:
+            continue
+        metrics = item.metrics_json if isinstance(item.metrics_json, dict) else {}
+        views = int(metrics.get("views", 0) or 0)
+        likes = int(metrics.get("likes", 0) or 0)
+        comments = int(metrics.get("comments", 0) or 0)
+        shares = int(metrics.get("shares", 0) or 0)
+        saves = int(metrics.get("saves", 0) or 0)
+        normalized_handle = str(item.creator_handle or creator_key).strip()
+        if normalized_handle and not normalized_handle.startswith("@"):
+            normalized_handle = f"@{normalized_handle}"
+        bucket = grouped.setdefault(
+            creator_key,
+            {
+                "handle": normalized_handle,
+                "display_name": str(item.creator_display_name or item.creator_handle or creator_key).strip(),
+                "external_id": creator_key,
+                "thumbnail_url": None,
+                "items": 0,
+                "views_total": 0,
+                "engagement_proxy": 0,
+            },
+        )
+        bucket["items"] += 1
+        bucket["views_total"] += max(views, 0)
+        bucket["engagement_proxy"] += max(likes, 0) + (max(comments, 0) * 2) + (max(shares, 0) * 3) + (max(saves, 0) * 3)
+        thumb = media_meta.get("thumbnail_url")
+        if thumb and not bucket["thumbnail_url"]:
+            bucket["thumbnail_url"] = thumb
+
+    ranked = sorted(
+        grouped.values(),
+        key=lambda row: (int(row["views_total"]), int(row["items"]), int(row["engagement_proxy"])),
+        reverse=True,
+    )[:request.top_n]
+
+    imported_rows: List[CompetitorResponse] = []
+    skipped_existing = 0
+    skipped_low_volume = 0
+    for row in ranked:
+        if int(row["items"]) < request.min_items_per_creator:
+            skipped_low_volume += 1
+            continue
+        external_id = str(row["external_id"])
+        if external_id in existing_ids:
+            skipped_existing += 1
+            continue
+        handle = str(row["handle"] or external_id).strip()
+        normalized_handle = handle if handle.startswith("@") else f"@{handle}"
+        comp = Competitor(
+            id=str(uuid.uuid4()),
+            user_id=scoped_user_id,
+            platform=request.platform,
+            handle=normalized_handle,
+            external_id=external_id,
+            display_name=str(row["display_name"] or normalized_handle),
+            profile_picture_url=row.get("thumbnail_url"),
+            subscriber_count=str(max(int(row.get("engagement_proxy", 0)), 0)),
+        )
+        db.add(comp)
+        await db.flush()
+        existing_ids.add(external_id)
+        imported_rows.append(
+            CompetitorResponse(
+                id=comp.id,
+                channel_id=comp.external_id,
+                title=comp.display_name,
+                custom_url=comp.handle,
+                subscriber_count=comp.subscriber_count,
+                thumbnail_url=comp.profile_picture_url,
+                created_at=str(comp.created_at),
+                platform=comp.platform,
+                video_count=int(row["items"]),
+            )
+        )
+
+    await db.commit()
+    return ImportCompetitorsFromResearchResponse(
+        platform=request.platform,
+        scanned_items=scanned_items,
+        candidate_creators=len(ranked),
+        imported_count=len(imported_rows),
+        skipped_existing=skipped_existing,
+        skipped_low_volume=skipped_low_volume,
+        competitors=imported_rows,
+    )
+
+
 @router.get("/", response_model=List[CompetitorResponse])
 async def list_competitors(
     user_id: Optional[str] = Query(default=None),
@@ -216,6 +462,103 @@ async def recommend_competitors(
         raise HTTPException(status_code=422, detail="niche is required")
 
     try:
+        if request.platform in {"instagram", "tiktok"}:
+            scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
+            tracked_result = await db.execute(
+                select(Competitor.external_id).where(
+                    Competitor.user_id == scoped_user_id,
+                    Competitor.platform == request.platform,
+                )
+            )
+            tracked_ids = {str(value) for value in tracked_result.scalars().all() if value}
+
+            items_result = await db.execute(
+                select(ResearchItem).where(
+                    ResearchItem.user_id == scoped_user_id,
+                    ResearchItem.platform == request.platform,
+                )
+            )
+            items = items_result.scalars().all()
+            niche_lower = niche.lower()
+            grouped: Dict[str, Dict[str, Any]] = {}
+            for item in items:
+                text_blob = " ".join(
+                    [
+                        str(item.title or ""),
+                        str(item.caption or ""),
+                        str(item.creator_handle or ""),
+                        str(item.creator_display_name or ""),
+                    ]
+                ).lower()
+                if niche_lower not in text_blob:
+                    continue
+                handle = str(item.creator_handle or item.creator_display_name or "").strip()
+                if not handle:
+                    continue
+                external_id = handle
+                metrics = item.metrics_json if isinstance(item.metrics_json, dict) else {}
+                views = int(metrics.get("views", 0) or 0)
+                likes = int(metrics.get("likes", 0) or 0)
+                comments = int(metrics.get("comments", 0) or 0)
+                shares = int(metrics.get("shares", 0) or 0)
+                saves = int(metrics.get("saves", 0) or 0)
+                row = grouped.setdefault(
+                    external_id,
+                    {
+                        "title": str(item.creator_display_name or handle),
+                        "custom_url": handle,
+                        "subscriber_count": 0,
+                        "video_count": 0,
+                        "view_count": 0,
+                        "engagement_points": 0,
+                        "thumbnail_url": None,
+                        "channel_id": external_id,
+                    },
+                )
+                row["video_count"] += 1
+                row["view_count"] += max(views, 0)
+                row["engagement_points"] += max(likes, 0) + (max(comments, 0) * 2) + (max(shares, 0) * 3) + (max(saves, 0) * 3)
+                media_meta = item.media_meta_json if isinstance(item.media_meta_json, dict) else {}
+                thumb = media_meta.get("thumbnail_url")
+                if thumb and not row["thumbnail_url"]:
+                    row["thumbnail_url"] = thumb
+
+            recommendations: List[RecommendedCompetitor] = []
+            for external_id, data in grouped.items():
+                video_count = max(int(data["video_count"]), 1)
+                avg_views = int(int(data["view_count"]) / video_count)
+                # follower count not available from metadata-only ingest; use engagement proxy
+                subscriber_proxy = int(data.get("engagement_points", 0))
+                recommendations.append(
+                    RecommendedCompetitor(
+                        channel_id=external_id,
+                        title=str(data["title"]),
+                        custom_url=str(data.get("custom_url") or ""),
+                        subscriber_count=subscriber_proxy,
+                        video_count=int(data["video_count"]),
+                        view_count=int(data["view_count"]),
+                        avg_views_per_video=avg_views,
+                        thumbnail_url=data.get("thumbnail_url"),
+                        already_tracked=external_id in tracked_ids,
+                    )
+                )
+
+            recommendations.sort(key=lambda r: r.title.lower())
+            recommendations.sort(
+                key=lambda r: getattr(r, request.sort_by),
+                reverse=request.sort_direction == "desc",
+            )
+            start = (request.page - 1) * request.limit
+            end = start + request.limit
+            return RecommendCompetitorsResponse(
+                niche=niche,
+                page=request.page,
+                limit=request.limit,
+                total_count=len(recommendations),
+                has_more=end < len(recommendations),
+                recommendations=recommendations[start:end],
+            )
+
         client = _get_youtube_client()
         scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
         requested_window = request.page * request.limit
@@ -339,7 +682,7 @@ async def generate_competitor_blueprint(
     from services.blueprint import generate_blueprint_service
 
     scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
-    return await generate_blueprint_service(scoped_user_id, db)
+    return await generate_blueprint_service(scoped_user_id, db, platform=request.platform)
 
 
 @router.post("/series")
@@ -352,7 +695,7 @@ async def get_competitor_series(
     from services.blueprint import get_competitor_series_service
 
     scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
-    return await get_competitor_series_service(scoped_user_id, db)
+    return await get_competitor_series_service(scoped_user_id, db, platform=request.platform)
 
 
 @router.post("/series/plan")
@@ -379,3 +722,71 @@ async def generate_viral_script(
 
     scoped_user_id = ensure_user_scope(auth.user_id, request.user_id)
     return await generate_viral_script_service(scoped_user_id, request.model_dump(), db)
+
+
+@router.post("/series/calendar")
+async def build_series_calendar(
+    request: SeriesCalendarRequest,
+    auth: AuthContext = Depends(get_auth_context),
+) -> Dict[str, Any]:
+    """Build a publish calendar from a generated series plan."""
+    from datetime import datetime, timedelta
+
+    ensure_user_scope(auth.user_id, request.user_id)
+    try:
+        start_date = datetime.fromisoformat(request.start_date).date()
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="start_date must be ISO date (YYYY-MM-DD)") from exc
+
+    scheduled: List[Dict[str, Any]] = []
+    for idx, episode in enumerate(request.episodes):
+        publish_date = start_date + timedelta(days=idx * request.cadence_days)
+        working_title = str(episode.get("working_title") or f"Episode {idx + 1}")
+        scheduled.append(
+            {
+                "episode_number": int(episode.get("episode_number") or (idx + 1)),
+                "working_title": working_title,
+                "publish_date": publish_date.isoformat(),
+                "status": "planned",
+                "checklist": [
+                    "Finalize hook line",
+                    "Record and edit draft",
+                    "Run re-score before publishing",
+                ],
+            }
+        )
+
+    return {
+        "series_title": request.series_title,
+        "platform": request.platform,
+        "cadence_days": request.cadence_days,
+        "episodes": scheduled,
+    }
+
+
+@router.post("/series/next_episode")
+async def next_series_episode(
+    request: SeriesNextEpisodeRequest,
+    auth: AuthContext = Depends(get_auth_context),
+) -> Dict[str, Any]:
+    """Generate the next episode brief so creators can continue a series consistently."""
+    ensure_user_scope(auth.user_id, request.user_id)
+    episode_number = int(request.completed_episodes) + 1
+    hook = (
+        f"Episode {episode_number}: the one mistake blocking {request.objective} "
+        f"for {request.audience}."
+    )
+    return {
+        "series_title": request.series_title,
+        "platform": request.platform,
+        "episode_number": episode_number,
+        "working_title": f"{request.series_title} - Episode {episode_number}",
+        "hook_line": hook,
+        "outline": [
+            "Hook with a concrete outcome claim",
+            "Show one proof point from your previous episode comments/results",
+            "Deliver 2 tactical steps",
+            "End with a single CTA tied to next episode",
+        ],
+        "cta": "Comment the next blocker you want solved in the next episode.",
+    }

@@ -19,6 +19,7 @@ from ingestion.youtube import create_youtube_client_with_api_key
 from models.competitor import Competitor
 from models.connection import Connection
 from models.profile import Profile
+from models.research_item import ResearchItem
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,92 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(float(value))
     except (TypeError, ValueError):
         return default
+
+
+def _normalize_creator_token(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text.startswith("@"):
+        text = text[1:]
+    return text
+
+
+def _identity_tokens(*values: Any) -> set[str]:
+    tokens: set[str] = set()
+    for value in values:
+        normalized = _normalize_creator_token(value)
+        if not normalized:
+            continue
+        tokens.add(normalized)
+        condensed = re.sub(r"[^a-z0-9]+", "", normalized)
+        if condensed:
+            tokens.add(condensed)
+    return tokens
+
+
+def _resolve_blueprint_platform(platform: Any) -> str:
+    key = str(platform or "youtube").strip().lower()
+    if key in {"youtube", "instagram", "tiktok"}:
+        return key
+    if key in {"instagram_reels", "reels"}:
+        return "instagram"
+    if key in {"youtube_shorts", "youtube_long"}:
+        return "youtube"
+    return "youtube"
+
+
+def _research_item_duration_seconds(item: ResearchItem, platform: str) -> int:
+    media_meta = item.media_meta_json if isinstance(item.media_meta_json, dict) else {}
+    duration = _safe_int(media_meta.get("duration_seconds"), 0)
+    if duration > 0:
+        return duration
+    if platform in {"instagram", "tiktok"}:
+        return 35
+    return 45
+
+
+def _research_item_to_blueprint_video(
+    *,
+    item: ResearchItem,
+    platform: str,
+    channel_label: str,
+) -> Dict[str, Any]:
+    metrics = item.metrics_json if isinstance(item.metrics_json, dict) else {}
+    views = _safe_int(metrics.get("views", 0))
+    likes = _safe_int(metrics.get("likes", 0))
+    comments = _safe_int(metrics.get("comments", 0))
+    title = str(item.title or "").strip()
+    caption = str(item.caption or "").strip()
+    if not title:
+        if caption:
+            title = caption[:90]
+        else:
+            title = str(item.url or item.external_id or "Untitled post")
+    transcript = caption or title
+    source = "caption_fallback" if caption else "title_fallback"
+    duration_seconds = _research_item_duration_seconds(item, platform)
+
+    row = {
+        "video_id": item.external_id or item.id,
+        "title": title,
+        "transcript": transcript,
+        "transcript_source": source,
+        "transcript_char_count": len(transcript),
+        "transcript_segment_count": 0,
+        "views": views,
+        "likes": likes,
+        "comments": comments,
+        "duration_seconds": duration_seconds,
+        "published": item.published_at.isoformat() if item.published_at else None,
+        "views_per_day": round(_views_per_day(views, item.published_at.isoformat() if item.published_at else None), 2),
+        "framework_signals": _derive_framework_signals(
+            {
+                "title": title,
+                "transcript": transcript,
+            }
+        ),
+        "channel": channel_label,
+    }
+    return row
 
 
 def _format_label(format_key: str) -> str:
@@ -1840,8 +1927,12 @@ def _build_viral_script(blueprint: Dict[str, Any], request: Dict[str, Any]) -> D
     return response
 
 
-async def get_competitor_series_service(user_id: str, db: AsyncSession) -> Dict[str, Any]:
-    blueprint = await generate_blueprint_service(user_id, db, use_llm=False)
+async def get_competitor_series_service(
+    user_id: str,
+    db: AsyncSession,
+    platform: str = "youtube",
+) -> Dict[str, Any]:
+    blueprint = await generate_blueprint_service(user_id, db, use_llm=False, platform=platform)
     series_intelligence = blueprint.get("series_intelligence", {})
     if isinstance(series_intelligence, dict):
         return series_intelligence
@@ -1849,12 +1940,14 @@ async def get_competitor_series_service(user_id: str, db: AsyncSession) -> Dict[
 
 
 async def generate_series_plan_service(user_id: str, request: Dict[str, Any], db: AsyncSession) -> Dict[str, Any]:
-    blueprint = await generate_blueprint_service(user_id, db, use_llm=False)
+    blueprint_platform = _resolve_blueprint_platform(request.get("platform"))
+    blueprint = await generate_blueprint_service(user_id, db, use_llm=False, platform=blueprint_platform)
     return _build_series_plan(blueprint, request)
 
 
 async def generate_viral_script_service(user_id: str, request: Dict[str, Any], db: AsyncSession) -> Dict[str, Any]:
-    blueprint = await generate_blueprint_service(user_id, db, use_llm=False)
+    blueprint_platform = _resolve_blueprint_platform(request.get("platform"))
+    blueprint = await generate_blueprint_service(user_id, db, use_llm=False, platform=blueprint_platform)
     return _build_viral_script(blueprint, request)
 
 
@@ -1885,22 +1978,203 @@ async def _resolve_user_channel(db: AsyncSession, user_id: str) -> Tuple[Optiona
     return None, "User Channel"
 
 
-async def generate_blueprint_service(user_id: str, db: AsyncSession, use_llm: bool = True) -> Dict[str, Any]:
+async def _resolve_user_platform_identity(
+    db: AsyncSession,
+    user_id: str,
+    platform: str,
+) -> Dict[str, Any]:
+    profile_result = await db.execute(
+        select(Profile)
+        .where(Profile.user_id == user_id, Profile.platform == platform)
+        .order_by(Profile.created_at.desc())
+        .limit(1)
+    )
+    profile = profile_result.scalar_one_or_none()
+
+    connection_result = await db.execute(
+        select(Connection)
+        .where(Connection.user_id == user_id, Connection.platform == platform)
+        .order_by(Connection.created_at.desc())
+        .limit(1)
+    )
+    connection = connection_result.scalar_one_or_none()
+
+    external_ids = {
+        _normalize_creator_token(profile.external_id) if profile and profile.external_id else "",
+        _normalize_creator_token(connection.platform_user_id) if connection and connection.platform_user_id else "",
+    }
+    handles = {
+        _normalize_creator_token(profile.handle) if profile and profile.handle else "",
+        _normalize_creator_token(connection.platform_handle) if connection and connection.platform_handle else "",
+    }
+    external_ids.discard("")
+    handles.discard("")
+    label = (
+        (profile.display_name if profile and profile.display_name else None)
+        or (profile.handle if profile and profile.handle else None)
+        or (connection.platform_handle if connection and connection.platform_handle else None)
+        or "User Channel"
+    )
+    return {
+        "label": label,
+        "external_ids": external_ids,
+        "handles": handles,
+    }
+
+
+def _extract_creator_handle_from_url(url: str, platform: str) -> str:
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    if platform == "instagram":
+        match = re.search(r"instagram\.com/([A-Za-z0-9._]+)/", text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    if platform == "tiktok":
+        match = re.search(r"tiktok\.com/@([A-Za-z0-9._-]+)", text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _research_item_identity_tokens(item: ResearchItem, platform: str) -> set[str]:
+    media_meta = item.media_meta_json if isinstance(item.media_meta_json, dict) else {}
+    creator_id = media_meta.get("creator_id")
+    creator_handle = str(item.creator_handle or "").strip()
+    inferred_handle = _extract_creator_handle_from_url(str(item.url or ""), platform)
+    return _identity_tokens(
+        creator_id,
+        creator_handle,
+        inferred_handle,
+        item.creator_display_name,
+    )
+
+
+def _competitor_identity_tokens(competitor: Competitor) -> set[str]:
+    return _identity_tokens(
+        competitor.external_id,
+        competitor.handle,
+        competitor.display_name,
+    )
+
+
+async def _collect_non_youtube_blueprint_rows(
+    user_id: str,
+    db: AsyncSession,
+    platform: str,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int]:
+    competitor_result = await db.execute(
+        select(Competitor).where(
+            Competitor.user_id == user_id,
+            Competitor.platform == platform,
+        )
+    )
+    competitors = competitor_result.scalars().all()
+    if not competitors:
+        return [], [], 0
+
+    token_to_competitor: Dict[str, Competitor] = {}
+    for competitor in competitors:
+        for token in _competitor_identity_tokens(competitor):
+            if token and token not in token_to_competitor:
+                token_to_competitor[token] = competitor
+
+    user_identity = await _resolve_user_platform_identity(db, user_id, platform)
+    user_tokens = set(user_identity.get("external_ids", set())) | set(user_identity.get("handles", set()))
+    identity_label = str(user_identity.get("label", "") or "").strip()
+    if identity_label and identity_label.lower() not in {"user channel"}:
+        user_tokens |= _identity_tokens(identity_label)
+
+    items_result = await db.execute(
+        select(ResearchItem)
+        .where(
+            ResearchItem.user_id == user_id,
+            ResearchItem.platform == platform,
+        )
+        .order_by(ResearchItem.published_at.desc(), ResearchItem.created_at.desc())
+    )
+    items = items_result.scalars().all()
+
+    user_rows: List[Dict[str, Any]] = []
+    competitor_rows: List[Dict[str, Any]] = []
+    max_rows_per_competitor = 50
+    competitor_counts: Dict[str, int] = defaultdict(int)
+
+    for item in items:
+        item_tokens = _research_item_identity_tokens(item, platform)
+        if not item_tokens:
+            continue
+
+        if user_tokens and item_tokens.intersection(user_tokens):
+            user_rows.append(
+                _research_item_to_blueprint_video(
+                    item=item,
+                    platform=platform,
+                    channel_label="User",
+                )
+            )
+            continue
+
+        matched_competitor: Optional[Competitor] = None
+        for token in item_tokens:
+            matched_competitor = token_to_competitor.get(token)
+            if matched_competitor:
+                break
+        if not matched_competitor:
+            continue
+
+        comp_id = str(matched_competitor.id)
+        if competitor_counts[comp_id] >= max_rows_per_competitor:
+            continue
+        competitor_counts[comp_id] += 1
+
+        competitor_rows.append(
+            _research_item_to_blueprint_video(
+                item=item,
+                platform=platform,
+                channel_label=str(
+                    matched_competitor.display_name
+                    or matched_competitor.handle
+                    or "Competitor"
+                ),
+            )
+        )
+
+    return user_rows, competitor_rows, len(items)
+
+
+async def generate_blueprint_service(
+    user_id: str,
+    db: AsyncSession,
+    use_llm: bool = True,
+    platform: str = "youtube",
+) -> Dict[str, Any]:
     """
     Generate a gap analysis and content strategy blueprint.
     """
-    user_channel_id, user_channel_name = await _resolve_user_channel(db, user_id)
+    resolved_platform = _resolve_blueprint_platform(platform)
+    user_channel_name = "User Channel"
+    user_channel_id: Optional[str] = None
 
-    result = await db.execute(select(Competitor).where(Competitor.user_id == user_id))
-    competitors = result.scalars().all()
+    result = await db.execute(
+        select(Competitor).where(
+            Competitor.user_id == user_id,
+            Competitor.platform == resolved_platform,
+        )
+    )
+    platform_competitors = result.scalars().all()
 
-    if not competitors:
+    if not platform_competitors:
         empty_winner_signals = _build_winner_pattern_signals([])
         empty_framework = _build_framework_playbook([])
         empty_hooks = _empty_hook_intelligence()
         empty_series = _empty_series_intelligence()
+        platform_label = resolved_platform.capitalize()
         return {
-            "gap_analysis": ["Add competitors to generate a blueprint."],
+            "gap_analysis": [
+                f"Add at least one {platform_label} competitor to generate blueprint playbook analysis.",
+                "Then import competitor posts/videos to unlock hook, framework, and velocity modeling.",
+            ],
             "content_pillars": [],
             "video_ideas": [],
             "hook_intelligence": empty_hooks,
@@ -1911,108 +2185,149 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession, use_llm: bo
             "velocity_actions": [],
             "series_intelligence": empty_series,
         }
+    all_videos: List[Dict[str, Any]] = []
+    if resolved_platform == "youtube":
+        user_channel_id, user_channel_name = await _resolve_user_channel(db, user_id)
+        client = _get_youtube_client()
+        transcript_semaphore = asyncio.Semaphore(TRANSCRIPT_FETCH_CONCURRENCY)
 
-    client = _get_youtube_client()
-    transcript_semaphore = asyncio.Semaphore(TRANSCRIPT_FETCH_CONCURRENCY)
+        async def fetch_videos_safe(channel_id: str, label: str) -> List[Dict[str, Any]]:
+            try:
+                vids = client.get_channel_videos(channel_id, max_results=50)
+                vid_ids = [v["id"] for v in vids if v.get("id")]
+                details = client.get_video_details(vid_ids)
 
-    async def fetch_videos_safe(channel_id: str, label: str) -> List[Dict[str, Any]]:
-        try:
-            vids = client.get_channel_videos(channel_id, max_results=50)
-            vid_ids = [v["id"] for v in vids if v.get("id")]
-            details = client.get_video_details(vid_ids)
+                ordered_video_ids: List[str] = []
+                for video in vids:
+                    video_id = str(video.get("id", "")).strip()
+                    if video_id:
+                        ordered_video_ids.append(video_id)
 
-            ordered_video_ids: List[str] = []
-            for video in vids:
-                video_id = str(video.get("id", "")).strip()
-                if video_id:
-                    ordered_video_ids.append(video_id)
+                transcript_map: Dict[str, Dict[str, Any]] = await _load_cached_transcript_payloads(ordered_video_ids)
+                missing_video_ids = [video_id for video_id in ordered_video_ids if video_id not in transcript_map]
 
-            transcript_map: Dict[str, Dict[str, Any]] = await _load_cached_transcript_payloads(ordered_video_ids)
-            missing_video_ids = [video_id for video_id in ordered_video_ids if video_id not in transcript_map]
-
-            transcript_tasks: List[asyncio.Task] = []
-            for video in vids:
-                video_id = str(video.get("id", "")).strip()
-                if not video_id or video_id not in missing_video_ids:
-                    continue
-                transcript_tasks.append(
-                    asyncio.create_task(
-                        _extract_transcript_payload(
-                            client=client,
-                            video_id=video_id,
-                            description_fallback=str(video.get("description", "") or ""),
-                            title_fallback=str(video.get("title", "") or ""),
-                            semaphore=transcript_semaphore,
+                transcript_tasks: List[asyncio.Task] = []
+                for video in vids:
+                    video_id = str(video.get("id", "")).strip()
+                    if not video_id or video_id not in missing_video_ids:
+                        continue
+                    transcript_tasks.append(
+                        asyncio.create_task(
+                            _extract_transcript_payload(
+                                client=client,
+                                video_id=video_id,
+                                description_fallback=str(video.get("description", "") or ""),
+                                title_fallback=str(video.get("title", "") or ""),
+                                semaphore=transcript_semaphore,
+                            )
                         )
                     )
+
+                transcript_payloads = await asyncio.gather(*transcript_tasks) if transcript_tasks else []
+                fresh_payloads: Dict[str, Dict[str, Any]] = {}
+                for idx, video_id in enumerate(missing_video_ids):
+                    if idx < len(transcript_payloads) and _is_valid_transcript_payload(transcript_payloads[idx]):
+                        payload = transcript_payloads[idx]
+                        transcript_map[video_id] = payload
+                        fresh_payloads[video_id] = payload
+                await _store_cached_transcript_payloads(fresh_payloads)
+
+                enriched = []
+                for video in vids:
+                    video_id = video.get("id")
+                    if not video_id:
+                        continue
+                    detail = details.get(video_id, {})
+                    description = str(video.get("description", "") or "")
+                    transcript_payload = transcript_map.get(
+                        video_id,
+                        {
+                            "text": description[:3000],
+                            "source": "description_fallback" if description else "title_fallback",
+                            "char_count": len(description[:3000]) if description else len(str(video.get("title", "") or "")[:300]),
+                            "segment_count": 0,
+                        },
+                    )
+                    transcript = str(transcript_payload.get("text", "") or "")
+                    views = _safe_int(detail.get("view_count", 0))
+                    enriched.append(
+                        {
+                            "title": video.get("title", ""),
+                            "description": description,
+                            "transcript": transcript,
+                            "transcript_source": str(transcript_payload.get("source", "unknown")),
+                            "transcript_char_count": _safe_int(transcript_payload.get("char_count", 0)),
+                            "transcript_segment_count": _safe_int(transcript_payload.get("segment_count", 0)),
+                            "views": views,
+                            "likes": _safe_int(detail.get("like_count", 0)),
+                            "comment_count": _safe_int(detail.get("comment_count", 0)),
+                            "duration_seconds": _safe_int(detail.get("duration_seconds", 0)),
+                            "published": video.get("published_at"),
+                            "views_per_day": round(_views_per_day(views, video.get("published_at")), 2),
+                            "framework_signals": _derive_framework_signals(
+                                {
+                                    "title": video.get("title", ""),
+                                    "transcript": transcript,
+                                }
+                            ),
+                            "channel": label,
+                        }
+                    )
+                return enriched
+            except Exception as e:
+                logger.warning("Error fetching blueprint videos for %s (%s): %s", label, channel_id, e)
+                return []
+
+        tasks = []
+        if user_channel_id:
+            tasks.append(fetch_videos_safe(user_channel_id, "User"))
+        for comp in platform_competitors:
+            tasks.append(fetch_videos_safe(comp.external_id, comp.display_name or "Competitor"))
+
+        results = await asyncio.gather(*tasks)
+        for rows in results:
+            all_videos.extend(rows)
+    else:
+        user_rows, competitor_rows, scanned_count = await _collect_non_youtube_blueprint_rows(
+            user_id=user_id,
+            db=db,
+            platform=resolved_platform,
+        )
+        all_videos.extend(user_rows)
+        all_videos.extend(competitor_rows)
+        if not competitor_rows:
+            empty_winner_signals = _build_winner_pattern_signals([])
+            empty_framework = _build_framework_playbook([])
+            empty_hooks = _empty_hook_intelligence(
+                summary=(
+                    f"No mapped {resolved_platform.capitalize()} competitor items found in research data. "
+                    "Import competitor posts first to unlock playbook extraction."
                 )
-
-            transcript_payloads = await asyncio.gather(*transcript_tasks) if transcript_tasks else []
-            fresh_payloads: Dict[str, Dict[str, Any]] = {}
-            for idx, video_id in enumerate(missing_video_ids):
-                if idx < len(transcript_payloads) and _is_valid_transcript_payload(transcript_payloads[idx]):
-                    payload = transcript_payloads[idx]
-                    transcript_map[video_id] = payload
-                    fresh_payloads[video_id] = payload
-            await _store_cached_transcript_payloads(fresh_payloads)
-
-            enriched = []
-            for video in vids:
-                video_id = video.get("id")
-                if not video_id:
-                    continue
-                detail = details.get(video_id, {})
-                description = str(video.get("description", "") or "")
-                transcript_payload = transcript_map.get(
-                    video_id,
-                    {
-                        "text": description[:3000],
-                        "source": "description_fallback" if description else "title_fallback",
-                        "char_count": len(description[:3000]) if description else len(str(video.get("title", "") or "")[:300]),
-                        "segment_count": 0,
-                    },
-                )
-                transcript = str(transcript_payload.get("text", "") or "")
-                views = _safe_int(detail.get("view_count", 0))
-                enriched.append(
-                    {
-                        "title": video.get("title", ""),
-                        "description": description,
-                        "transcript": transcript,
-                        "transcript_source": str(transcript_payload.get("source", "unknown")),
-                        "transcript_char_count": _safe_int(transcript_payload.get("char_count", 0)),
-                        "transcript_segment_count": _safe_int(transcript_payload.get("segment_count", 0)),
-                        "views": views,
-                        "likes": _safe_int(detail.get("like_count", 0)),
-                        "comment_count": _safe_int(detail.get("comment_count", 0)),
-                        "duration_seconds": _safe_int(detail.get("duration_seconds", 0)),
-                        "published": video.get("published_at"),
-                        "views_per_day": round(_views_per_day(views, video.get("published_at")), 2),
-                        "framework_signals": _derive_framework_signals(
-                            {
-                                "title": video.get("title", ""),
-                                "transcript": transcript,
-                            }
-                        ),
-                        "channel": label,
-                    }
-                )
-            return enriched
-        except Exception as e:
-            logger.warning("Error fetching blueprint videos for %s (%s): %s", label, channel_id, e)
-            return []
-
-    tasks = []
-    if user_channel_id:
-        tasks.append(fetch_videos_safe(user_channel_id, "User"))
-    for comp in competitors:
-        tasks.append(fetch_videos_safe(comp.external_id, comp.display_name or "Competitor"))
-
-    results = await asyncio.gather(*tasks)
-
-    all_videos: List[Dict[str, Any]] = []
-    for rows in results:
-        all_videos.extend(rows)
+            )
+            empty_series = _empty_series_intelligence(
+                summary=f"No recurring {resolved_platform.capitalize()} competitor series could be detected yet."
+            )
+            return {
+                "gap_analysis": [
+                    f"Add {resolved_platform.capitalize()} competitor posts into Research to build benchmark velocity signals.",
+                    "Connect your own account and import owned analytics for user-vs-competitor gap analysis.",
+                ],
+                "content_pillars": [],
+                "video_ideas": [],
+                "hook_intelligence": empty_hooks,
+                "winner_pattern_signals": empty_winner_signals,
+                "framework_playbook": empty_framework,
+                "repurpose_plan": _build_repurpose_plan(empty_hooks, empty_winner_signals, empty_framework),
+                "transcript_quality": _build_transcript_quality([]),
+                "velocity_actions": [],
+                "series_intelligence": empty_series,
+                "dataset_summary": {
+                    "platform": resolved_platform,
+                    "research_items_scanned": scanned_count,
+                    "mapped_competitor_items": 0,
+                    "mapped_user_items": len(user_rows),
+                },
+            }
 
     user_videos = [v for v in all_videos if v.get("channel") == "User"]
     competitor_videos = [v for v in all_videos if v.get("channel") != "User"]
@@ -2075,13 +2390,18 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession, use_llm: bo
         "transcript_quality": transcript_quality,
         "velocity_actions": velocity_actions,
         "series_intelligence": series_intelligence,
+        "dataset_summary": {
+            "platform": resolved_platform,
+            "mapped_competitor_items": len(competitor_videos),
+            "mapped_user_items": len(user_videos),
+        },
     }
 
     if not use_llm:
         return deterministic_blueprint
 
     prompt = f"""
-    Analyze these YouTube video performance stats to create a content blueprint.
+    Analyze these {resolved_platform.capitalize()} content performance stats to create a content blueprint.
 
     My Channel: {user_channel_name} (Videos: {[v for v in all_videos if v['channel'] == 'User']})
 
@@ -2252,7 +2572,9 @@ async def generate_blueprint_service(user_id: str, db: AsyncSession, use_llm: bo
         )
         content = response.choices[0].message.content
         parsed = json.loads(content)
-        return _normalize_blueprint_payload(parsed, deterministic_blueprint)
+        normalized = _normalize_blueprint_payload(parsed, deterministic_blueprint)
+        normalized["dataset_summary"] = deterministic_blueprint.get("dataset_summary", {})
+        return normalized
     except Exception as e:
         logger.warning("Blueprint LLM fallback for user %s: %s", user_id, e)
         return deterministic_blueprint

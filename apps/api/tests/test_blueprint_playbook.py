@@ -4,6 +4,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from database import Base
 from models.competitor import Competitor
+from models.profile import Profile
+from models.research_item import ResearchItem
 from models.user import User
 from services.blueprint import (
     generate_blueprint_service,
@@ -177,3 +179,101 @@ async def test_series_and_script_services_return_structured_outputs(blueprint_db
     assert isinstance(script["script_sections"], list)
     assert len(script["script_sections"]) > 0
     assert "score_breakdown" in script
+
+
+@pytest.mark.asyncio
+async def test_blueprint_builds_instagram_playbook_from_research_items(tmp_path):
+    db_path = tmp_path / "blueprint_instagram.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with session_maker() as session:
+        user = User(id="user-ig-only", email="user-ig-only@local.invalid")
+        session.add(user)
+        session.add(
+            Competitor(
+                id="comp-ig-1",
+                user_id="user-ig-only",
+                platform="instagram",
+                handle="@igcreator",
+                external_id="@igcreator",
+                display_name="IG Creator",
+            )
+        )
+        session.add(
+            Profile(
+                id="profile-ig-user",
+                user_id="user-ig-only",
+                platform="instagram",
+                handle="@mycreator",
+                external_id="@mycreator",
+                display_name="My Creator",
+            )
+        )
+        session.add_all(
+            [
+                ResearchItem(
+                    id="ri-user-1",
+                    user_id="user-ig-only",
+                    collection_id=None,
+                    platform="instagram",
+                    source_type="csv_import",
+                    url="https://www.instagram.com/reel/AAA111/",
+                    external_id="AAA111",
+                    creator_handle="@mycreator",
+                    creator_display_name="My Creator",
+                    title="How I plan content",
+                    caption="Proof + framework + CTA",
+                    metrics_json={"views": 18000, "likes": 900, "comments": 80, "shares": 40, "saves": 60},
+                    media_meta_json={"duration_seconds": 33},
+                ),
+                ResearchItem(
+                    id="ri-comp-1",
+                    user_id="user-ig-only",
+                    collection_id=None,
+                    platform="instagram",
+                    source_type="manual_url",
+                    url="https://www.instagram.com/reel/BBB222/",
+                    external_id="BBB222",
+                    creator_handle="@igcreator",
+                    creator_display_name="IG Creator",
+                    title="Why most reels flop in 2026",
+                    caption="By the end of this reel I show the 3-step fix and proof.",
+                    metrics_json={"views": 120000, "likes": 7800, "comments": 620, "shares": 410, "saves": 500},
+                    media_meta_json={"duration_seconds": 38},
+                ),
+                ResearchItem(
+                    id="ri-comp-2",
+                    user_id="user-ig-only",
+                    collection_id=None,
+                    platform="instagram",
+                    source_type="browser_capture",
+                    url="https://www.instagram.com/reel/CCC333/",
+                    external_id="CCC333",
+                    creator_handle="@igcreator",
+                    creator_display_name="IG Creator",
+                    title="I tested this hook framework for 30 days",
+                    caption="Coming up: the exact hook template and the CTA stack.",
+                    metrics_json={"views": 98000, "likes": 6500, "comments": 510, "shares": 330, "saves": 420},
+                    media_meta_json={"duration_seconds": 42},
+                ),
+            ]
+        )
+        await session.commit()
+
+        blueprint = await generate_blueprint_service(
+            "user-ig-only",
+            session,
+            use_llm=False,
+            platform="instagram",
+        )
+        assert isinstance(blueprint["gap_analysis"], list)
+        assert blueprint["winner_pattern_signals"]["sample_size"] > 0
+        assert blueprint["framework_playbook"]["summary"]
+        assert blueprint["hook_intelligence"]["summary"]
+        assert blueprint["dataset_summary"]["platform"] == "instagram"
+        assert blueprint["dataset_summary"]["mapped_competitor_items"] >= 2
+
+    await engine.dispose()
