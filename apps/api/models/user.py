@@ -40,3 +40,5 @@ class User(Base):
     calibration_snapshots = relationship("CalibrationSnapshot", back_populates="user", cascade="all, delete-orphan")
     credit_entries = relationship("CreditLedger", back_populates="user", cascade="all, delete-orphan")
     report_share_links = relationship("ReportShareLink", back_populates="user", cascade="all, delete-orphan")
+    media_assets = relationship("MediaAsset", back_populates="user", cascade="all, delete-orphan")
+    media_download_jobs = relationship("MediaDownloadJob", back_populates="user", cascade="all, delete-orphan")

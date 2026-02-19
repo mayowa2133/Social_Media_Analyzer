@@ -17,3 +17,5 @@ from .outcome_metric import OutcomeMetric
 from .calibration_snapshot import CalibrationSnapshot
 from .credit_ledger import CreditLedger
 from .report_share_link import ReportShareLink
+from .media_asset import MediaAsset
+from .media_download_job import MediaDownloadJob

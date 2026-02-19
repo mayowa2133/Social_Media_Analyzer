@@ -24,3 +24,4 @@ class Upload(Base):
     
     # Relationships
     user = relationship("User", back_populates="uploads")
+    media_asset = relationship("MediaAsset", back_populates="upload", uselist=False)

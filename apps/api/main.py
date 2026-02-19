@@ -24,8 +24,9 @@ from routers import (
     optimizer,
     outcomes,
     billing,
+    media,
 )
-from services.audit_queue import recover_stalled_audits
+from services.audit_queue import recover_stalled_audits, recover_stalled_media_download_jobs
 from services.outcomes import run_calibration_refresh_for_all_users_service
 
 
@@ -64,6 +65,12 @@ async def lifespan(app: FastAPI):
             print(f"♻️ Recovered {recovered} stalled audits after startup.")
     except Exception as exc:
         print(f"⚠️ Stalled audit recovery skipped: {exc}")
+    try:
+        recovered_media = await recover_stalled_media_download_jobs()
+        if recovered_media:
+            print(f"♻️ Recovered {recovered_media} stalled media download jobs after startup.")
+    except Exception as exc:
+        print(f"⚠️ Stalled media recovery skipped: {exc}")
     recalibration_task = None
     if settings.OUTCOME_LEARNING_ENABLED and int(settings.OUTCOME_RECALIBRATE_INTERVAL_MINUTES) > 0:
         recalibration_task = asyncio.create_task(_periodic_outcome_recalibration())
@@ -110,6 +117,7 @@ app.include_router(research.router, prefix="/research", tags=["Research"])
 app.include_router(optimizer.router, prefix="/optimizer", tags=["Optimizer"])
 app.include_router(outcomes.router, prefix="/outcomes", tags=["Outcomes"])
 app.include_router(billing.router, prefix="/billing", tags=["Billing"])
+app.include_router(media.router, prefix="/media", tags=["Media"])
 
 
 @app.get("/")

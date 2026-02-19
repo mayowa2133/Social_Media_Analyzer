@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from database import Base, get_db
 from main import app
+from models.competitor import Competitor
 from models.research_item import ResearchItem
 from models.user import User
 from services.session_token import create_session_token
@@ -120,6 +121,11 @@ async def test_competitor_discover_dedupes_identity_for_instagram(parity_client)
     assert candidate["display_name"] == "AI News Lab"
     assert candidate["handle"].startswith("@")
     assert candidate["quality_score"] > 0
+    assert candidate["confidence_tier"] in {"low", "medium", "high"}
+    assert isinstance(candidate.get("evidence"), list)
+    assert len(candidate["evidence"]) >= 1
+    assert int(candidate.get("source_count", 0)) >= 1
+    assert isinstance(candidate.get("source_labels"), list)
 
     repeat = await client.post(
         "/competitors/discover",
@@ -135,3 +141,171 @@ async def test_competitor_discover_dedupes_identity_for_instagram(parity_client)
     assert repeat.status_code == 200
     assert repeat.json()["candidates"][0]["external_id"] == candidate["external_id"]
 
+
+@pytest.mark.asyncio
+async def test_competitor_discover_manual_url_seed_for_tiktok(parity_client):
+    client, _ = parity_client
+
+    query = (
+        "https://www.tiktok.com/@ai.daily.breakdown/video/7371111111111111111 "
+        "https://www.tiktok.com/@ai.daily.breakdown/video/7372222222222222222"
+    )
+    response = await client.post(
+        "/competitors/discover",
+        json={
+            "platform": "tiktok",
+            "query": query,
+            "page": 1,
+            "limit": 20,
+            "user_id": PARITY_USER_ID,
+        },
+        headers=PARITY_AUTH_HEADER,
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["platform"] == "tiktok"
+    assert payload["total_count"] >= 1
+    candidate = payload["candidates"][0]
+    assert candidate["source"] in {"manual_url_seed", "research_corpus", "official_api"}
+    assert candidate["handle"].startswith("@")
+    assert candidate["quality_score"] > 0
+
+    repeat = await client.post(
+        "/competitors/discover",
+        json={
+            "platform": "tiktok",
+            "query": query,
+            "page": 1,
+            "limit": 20,
+            "user_id": PARITY_USER_ID,
+        },
+        headers=PARITY_AUTH_HEADER,
+    )
+    assert repeat.status_code == 200
+    assert repeat.json()["candidates"][0]["external_id"] == candidate["external_id"]
+
+
+@pytest.mark.asyncio
+async def test_competitor_discover_pagination_stable_order(parity_client):
+    client, session_maker = parity_client
+
+    async with session_maker() as session:
+        session.add_all(
+            [
+                ResearchItem(
+                    id="ri-page-1",
+                    user_id=PARITY_USER_ID,
+                    platform="instagram",
+                    source_type="capture",
+                    creator_handle="@growthalpha",
+                    creator_display_name="Growth Alpha",
+                    title="hooks 1",
+                    caption="hooks alpha",
+                    external_id="ig-page-1",
+                    metrics_json={"views": 120000, "likes": 5100, "comments": 200, "shares": 180, "saves": 90},
+                    media_meta_json={"creator_id": "creator_p1"},
+                ),
+                ResearchItem(
+                    id="ri-page-2",
+                    user_id=PARITY_USER_ID,
+                    platform="instagram",
+                    source_type="capture",
+                    creator_handle="@growthbeta",
+                    creator_display_name="Growth Beta",
+                    title="hooks 2",
+                    caption="hooks beta",
+                    external_id="ig-page-2",
+                    metrics_json={"views": 60000, "likes": 2200, "comments": 90, "shares": 80, "saves": 40},
+                    media_meta_json={"creator_id": "creator_p2"},
+                ),
+            ]
+        )
+        await session.commit()
+
+    page_1 = await client.post(
+        "/competitors/discover",
+        json={
+            "platform": "instagram",
+            "query": "hooks",
+            "page": 1,
+            "limit": 1,
+            "user_id": PARITY_USER_ID,
+        },
+        headers=PARITY_AUTH_HEADER,
+    )
+    assert page_1.status_code == 200
+    payload_1 = page_1.json()
+    assert payload_1["total_count"] >= 2
+    assert payload_1["has_more"] is True
+    first_id = payload_1["candidates"][0]["external_id"]
+
+    page_2 = await client.post(
+        "/competitors/discover",
+        json={
+            "platform": "instagram",
+            "query": "hooks",
+            "page": 2,
+            "limit": 1,
+            "user_id": PARITY_USER_ID,
+        },
+        headers=PARITY_AUTH_HEADER,
+    )
+    assert page_2.status_code == 200
+    payload_2 = page_2.json()
+    assert payload_2["total_count"] == payload_1["total_count"]
+    second_id = payload_2["candidates"][0]["external_id"]
+    assert second_id != first_id
+
+    repeat = await client.post(
+        "/competitors/discover",
+        json={
+            "platform": "instagram",
+            "query": "hooks",
+            "page": 1,
+            "limit": 1,
+            "user_id": PARITY_USER_ID,
+        },
+        headers=PARITY_AUTH_HEADER,
+    )
+    assert repeat.status_code == 200
+    assert repeat.json()["candidates"][0]["external_id"] == first_id
+
+
+@pytest.mark.asyncio
+async def test_competitor_discover_community_graph_source_for_tiktok(parity_client):
+    client, session_maker = parity_client
+    other_user_id = "parity-other-user"
+
+    async with session_maker() as session:
+        session.add(User(id=other_user_id, email="other@example.com"))
+        session.add(
+            Competitor(
+                id="comp-community-1",
+                user_id=other_user_id,
+                platform="tiktok",
+                handle="@aipatternlab",
+                external_id="aipatternlab",
+                display_name="AI Pattern Lab",
+                subscriber_count="128900",
+            )
+        )
+        await session.commit()
+
+    response = await client.post(
+        "/competitors/discover",
+        json={
+            "platform": "tiktok",
+            "query": "pattern",
+            "page": 1,
+            "limit": 10,
+            "user_id": PARITY_USER_ID,
+        },
+        headers=PARITY_AUTH_HEADER,
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total_count"] >= 1
+    candidate = payload["candidates"][0]
+    assert candidate["source"] in {"community_graph", "research_corpus", "manual_url_seed", "official_api"}
+    assert candidate["confidence_tier"] in {"low", "medium", "high"}
+    assert isinstance(candidate.get("evidence"), list)

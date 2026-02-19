@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
     addCompetitor,
     addManualCompetitor,
@@ -80,6 +80,8 @@ export default function CompetitorsPage() {
     const [discoveredCandidates, setDiscoveredCandidates] = useState<DiscoverCompetitorCandidate[]>([]);
     const [selectedDiscoverIds, setSelectedDiscoverIds] = useState<string[]>([]);
     const [importingDiscovered, setImportingDiscovered] = useState(false);
+    const [discoverSourceFilter, setDiscoverSourceFilter] = useState<string>("all");
+    const [discoverConfidenceFilter, setDiscoverConfidenceFilter] = useState<"all" | "low" | "medium" | "high">("all");
 
     const [seriesInsights, setSeriesInsights] = useState<SeriesIntelligence | null>(null);
     const [loadingSeries, setLoadingSeries] = useState(false);
@@ -157,6 +159,29 @@ export default function CompetitorsPage() {
             setScriptTemplateKey(firstKey);
         }
     }, [seriesInsights, blueprint, seriesTemplateKey, scriptTemplateKey]);
+
+    const filteredDiscoveredCandidates = useMemo(() => {
+        return discoveredCandidates.filter((candidate) => {
+            if (discoverSourceFilter !== "all") {
+                const labels = candidate.source_labels || [];
+                if (candidate.source !== discoverSourceFilter && !labels.includes(discoverSourceFilter)) {
+                    return false;
+                }
+            }
+            if (discoverConfidenceFilter !== "all") {
+                if ((candidate.confidence_tier || "low") !== discoverConfidenceFilter) {
+                    return false;
+                }
+            }
+            return true;
+        });
+    }, [discoveredCandidates, discoverSourceFilter, discoverConfidenceFilter]);
+
+    const selectedImportableCount = useMemo(() => {
+        return discoveredCandidates.filter(
+            (item) => selectedDiscoverIds.includes(item.external_id) && !item.already_tracked
+        ).length;
+    }, [discoveredCandidates, selectedDiscoverIds]);
 
     function hasPlatformCompetitor(platform: CompetitorAnalysisPlatform, rows: Competitor[]) {
         return rows.some((item) => item.platform === platform);
@@ -346,6 +371,8 @@ export default function CompetitorsPage() {
             });
             setDiscoveredCandidates(result.candidates);
             setSelectedDiscoverIds([]);
+            setDiscoverSourceFilter("all");
+            setDiscoverConfidenceFilter("all");
         } catch (err: any) {
             setDiscoverError(err.message || "Failed to discover competitors.");
             setDiscoveredCandidates([]);
@@ -701,8 +728,31 @@ export default function CompetitorsPage() {
                                 )}
                                 {discoveredCandidates.length > 0 && (
                                     <div className="mt-3 space-y-2">
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <select
+                                                value={discoverSourceFilter}
+                                                onChange={(e) => setDiscoverSourceFilter(e.target.value)}
+                                                className="rounded-lg border border-[#d9d9d9] bg-white px-2 py-1 text-xs text-[#444] focus:border-[#bcbcbc] focus:outline-none"
+                                            >
+                                                <option value="all">All Sources</option>
+                                                <option value="official_api">Official API</option>
+                                                <option value="research_corpus">Research Corpus</option>
+                                                <option value="community_graph">Community Graph</option>
+                                                <option value="manual_url_seed">Manual URL Seed</option>
+                                            </select>
+                                            <select
+                                                value={discoverConfidenceFilter}
+                                                onChange={(e) => setDiscoverConfidenceFilter(e.target.value as "all" | "low" | "medium" | "high")}
+                                                className="rounded-lg border border-[#d9d9d9] bg-white px-2 py-1 text-xs text-[#444] focus:border-[#bcbcbc] focus:outline-none"
+                                            >
+                                                <option value="all">All Confidence</option>
+                                                <option value="high">High Confidence</option>
+                                                <option value="medium">Medium Confidence</option>
+                                                <option value="low">Low Confidence</option>
+                                            </select>
+                                        </div>
                                         <div className="max-h-56 space-y-2 overflow-auto rounded-xl border border-[#e1e1e1] bg-[#fafafa] p-2">
-                                            {discoveredCandidates.map((candidate) => (
+                                            {filteredDiscoveredCandidates.map((candidate) => (
                                                 <label key={candidate.external_id} className="flex items-start gap-2 rounded-lg border border-[#e8e8e8] bg-white p-2">
                                                     <input
                                                         type="checkbox"
@@ -716,19 +766,32 @@ export default function CompetitorsPage() {
                                                             {candidate.already_tracked ? " (tracked)" : ""}
                                                         </p>
                                                         <p className="text-[11px] text-[#666]">
-                                                            {candidate.handle} · score {candidate.quality_score.toFixed(1)} · src {candidate.source}
+                                                            {candidate.handle} · score {candidate.quality_score.toFixed(1)} · {candidate.confidence_tier || "low"} confidence
                                                         </p>
+                                                        <p className="text-[11px] text-[#777]">
+                                                            src {candidate.source} · {candidate.source_count || 1} source{(candidate.source_count || 1) > 1 ? "s" : ""}
+                                                        </p>
+                                                        {candidate.evidence && candidate.evidence.length > 0 && (
+                                                            <p className="mt-1 line-clamp-2 text-[10px] text-[#7a7a7a]">
+                                                                {candidate.evidence.slice(0, 2).join(" ")}
+                                                            </p>
+                                                        )}
                                                     </div>
                                                 </label>
                                             ))}
+                                            {filteredDiscoveredCandidates.length === 0 && (
+                                                <p className="rounded-lg border border-dashed border-[#ddd] bg-white px-2 py-2 text-[11px] text-[#777]">
+                                                    No candidates match your source/confidence filters.
+                                                </p>
+                                            )}
                                         </div>
                                         <button
                                             type="button"
                                             onClick={() => void handleImportSelectedDiscovered()}
-                                            disabled={importingDiscovered || selectedDiscoverIds.length === 0}
+                                            disabled={importingDiscovered || selectedImportableCount === 0}
                                             className="w-full rounded-xl bg-[#1f1f1f] px-3 py-2 text-sm font-semibold text-white hover:bg-[#111] disabled:opacity-50"
                                         >
-                                            {importingDiscovered ? "Importing..." : `Import Selected (${selectedDiscoverIds.length})`}
+                                            {importingDiscovered ? "Importing..." : `Import Selected (${selectedImportableCount})`}
                                         </button>
                                     </div>
                                 )}

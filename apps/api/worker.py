@@ -2,12 +2,12 @@
 
 from rq import Worker
 
-from services.audit_queue import AUDIT_QUEUE_NAME, get_redis_connection
+from services.audit_queue import AUDIT_QUEUE_NAME, MEDIA_QUEUE_NAME, get_redis_connection
 
 
 def main():
     redis_conn = get_redis_connection()
-    worker = Worker([AUDIT_QUEUE_NAME], connection=redis_conn)
+    worker = Worker([AUDIT_QUEUE_NAME, MEDIA_QUEUE_NAME], connection=redis_conn)
     worker.work(with_scheduler=True)
 
 

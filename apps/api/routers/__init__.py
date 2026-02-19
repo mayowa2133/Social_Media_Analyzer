@@ -12,4 +12,5 @@ from . import (
     optimizer,
     outcomes,
     billing,
+    media,
 )

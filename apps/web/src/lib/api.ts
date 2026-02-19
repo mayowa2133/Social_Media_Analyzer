@@ -527,6 +527,10 @@ export interface DiscoverCompetitorCandidate {
     source: string;
     quality_score: number;
     already_tracked: boolean;
+    source_count?: number;
+    source_labels?: string[];
+    confidence_tier?: "low" | "medium" | "high";
+    evidence?: string[];
 }
 
 export interface DiscoverCompetitorsResponse {
@@ -965,6 +969,29 @@ export interface UploadAuditVideoResponse {
     status: string;
 }
 
+export interface CreateMediaDownloadRequest {
+    platform: "youtube" | "instagram" | "tiktok";
+    source_url: string;
+    user_id?: string;
+}
+
+export interface MediaDownloadJobStatus {
+    job_id: string;
+    platform: "youtube" | "instagram" | "tiktok";
+    source_url: string;
+    status: string;
+    progress: number;
+    attempts: number;
+    max_attempts: number;
+    queue_job_id?: string | null;
+    media_asset_id?: string | null;
+    upload_id?: string | null;
+    error_code?: string | null;
+    error_message?: string | null;
+    created_at?: string | null;
+    completed_at?: string | null;
+}
+
 export interface RunAuditResponse {
     audit_id: string;
     status: string;
@@ -1002,6 +1029,22 @@ export async function uploadAuditVideo(file: File, userId?: string): Promise<Upl
     formData.append("file", file);
     formData.append("user_id", resolveUserId(userId));
     return fetchFormApi<UploadAuditVideoResponse>("/audit/upload", formData);
+}
+
+export async function createMediaDownloadJob(payload: CreateMediaDownloadRequest): Promise<MediaDownloadJobStatus> {
+    return fetchApi<MediaDownloadJobStatus>("/media/download", {
+        method: "POST",
+        body: {
+            platform: payload.platform,
+            source_url: payload.source_url,
+            user_id: resolveUserId(payload.user_id),
+        },
+    });
+}
+
+export async function getMediaDownloadJobStatus(jobId: string, userId?: string): Promise<MediaDownloadJobStatus> {
+    const qUserId = resolveUserId(userId);
+    return fetchApi<MediaDownloadJobStatus>(`/media/download/${safeEncode(jobId)}?user_id=${safeEncode(qUserId)}`);
 }
 
 export async function getAuditStatus(auditId: string, userId?: string): Promise<AuditStatus> {
