@@ -5,9 +5,12 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
 import {
+    createMediaDownloadJob,
+    getMediaDownloadJobStatus,
     getResearchItem,
     getAuditStatus,
     getCurrentUserId,
+    MediaDownloadJobStatus,
     RetentionPoint,
     runMultimodalAudit,
     syncYouTubeSession,
@@ -75,6 +78,16 @@ export default function NewAuditPage() {
     const [researchItemId, setResearchItemId] = useState("");
     const [researchSourceSummary, setResearchSourceSummary] = useState<string | null>(null);
     const [loadingResearchSource, setLoadingResearchSource] = useState(false);
+    const [downloadingMedia, setDownloadingMedia] = useState(false);
+    const [mediaJob, setMediaJob] = useState<{
+        jobId: string;
+        sourceUrl: string;
+        status: string;
+        progress: number;
+        uploadId?: string | null;
+        errorMessage?: string | null;
+    } | null>(null);
+    const [resolvedUploadId, setResolvedUploadId] = useState<string | null>(null);
 
     async function resolveUserId(): Promise<string | undefined> {
         const stored = getCurrentUserId();
@@ -117,6 +130,8 @@ export default function NewAuditPage() {
             if (item.url) {
                 setSourceMode("url");
                 setVideoUrl(item.url);
+                setMediaJob(null);
+                setResolvedUploadId(null);
             }
         } catch (err: any) {
             setError(err.message || "Could not load research item");
@@ -146,6 +161,112 @@ export default function NewAuditPage() {
             setSelectedPlatform(inferred);
         }
     }, [sourceMode, videoUrl, selectedPlatform]);
+
+    useEffect(() => {
+        if (sourceMode !== "url") {
+            return;
+        }
+        const normalized = videoUrl.trim();
+        if (!normalized) {
+            if (mediaJob || resolvedUploadId) {
+                setMediaJob(null);
+                setResolvedUploadId(null);
+            }
+            return;
+        }
+        if (mediaJob && mediaJob.sourceUrl !== normalized) {
+            setMediaJob(null);
+            setResolvedUploadId(null);
+        }
+    }, [mediaJob, resolvedUploadId, sourceMode, videoUrl]);
+
+    async function pollMediaDownloadJob(
+        jobId: string,
+        userId: string,
+        sourceUrl: string
+    ): Promise<MediaDownloadJobStatus> {
+        let pollDelayMs = 1800;
+        const maxAttempts = 120;
+        let latest: MediaDownloadJobStatus | null = null;
+        for (let i = 0; i < maxAttempts; i++) {
+            await sleep(pollDelayMs);
+            const status = await getMediaDownloadJobStatus(jobId, userId);
+            latest = status;
+            setMediaJob({
+                jobId,
+                sourceUrl,
+                status: status.status,
+                progress: status.progress || 0,
+                uploadId: status.upload_id || null,
+                errorMessage: status.error_message || null,
+            });
+            setProgressMessage(`Media download: ${status.status} (${status.progress}%)`);
+
+            if (status.status === "completed") {
+                if (!status.upload_id) {
+                    throw new Error("Media download completed without an upload source id.");
+                }
+                return status;
+            }
+            if (status.status === "failed") {
+                throw new Error(status.error_message || "Media download failed.");
+            }
+            pollDelayMs = Math.min(Math.round(pollDelayMs * 1.12), 4500);
+        }
+
+        throw new Error(
+            latest?.error_message
+                || "Media download is still processing. You can continue with direct URL or local upload mode."
+        );
+    }
+
+    async function handleDownloadUrlToUpload() {
+        const normalized = videoUrl.trim();
+        if (!normalized) {
+            setError("Enter a URL before starting media download.");
+            return;
+        }
+        setError(null);
+        setProgressMessage("Creating media download job...");
+        setDownloadingMedia(true);
+        try {
+            const userId = await resolveUserId();
+            if (!userId) {
+                throw new Error("Connect a platform before downloading media so your session can be authenticated.");
+            }
+            const inferred = inferPlatformFromUrl(normalized);
+            const platform = inferred || selectedPlatform;
+            const job = await createMediaDownloadJob({
+                platform,
+                source_url: normalized,
+                user_id: userId,
+            });
+            setMediaJob({
+                jobId: job.job_id,
+                sourceUrl: normalized,
+                status: job.status,
+                progress: job.progress || 0,
+                uploadId: job.upload_id || null,
+                errorMessage: job.error_message || null,
+            });
+            setProgressMessage("Media download job queued...");
+
+            const completed = await pollMediaDownloadJob(job.job_id, userId, normalized);
+            setResolvedUploadId(completed.upload_id || null);
+            setSourceMode("upload");
+            setVideoFile(null);
+            setProgressMessage("Media download completed. Using downloaded upload source for audit.");
+        } catch (err: any) {
+            const message = err?.message || "Failed to download URL media.";
+            if (String(message).toLowerCase().includes("disabled")) {
+                setError(`${message} You can still run URL mode directly or switch to local file upload.`);
+            } else {
+                setError(message);
+            }
+        } finally {
+            setDownloadingMedia(false);
+        }
+    }
 
     function updateRetentionRow(index: number, key: keyof RetentionRowInput, value: string) {
         setRetentionRows((prev) =>
@@ -179,8 +300,8 @@ export default function NewAuditPage() {
             setError("Enter a video URL to run the audit.");
             return;
         }
-        if (sourceMode === "upload" && !videoFile) {
-            setError("Select a video file to upload.");
+        if (sourceMode === "upload" && !videoFile && !resolvedUploadId) {
+            setError("Select a video file or use a completed downloaded upload source.");
             return;
         }
 
@@ -278,12 +399,22 @@ export default function NewAuditPage() {
             }
             let run;
             if (sourceMode === "upload") {
-                setProgressMessage("Uploading video...");
-                const upload = await uploadAuditVideo(videoFile as File, userId);
+                let uploadId = resolvedUploadId;
+                if (videoFile) {
+                    setProgressMessage("Uploading video...");
+                    const upload = await uploadAuditVideo(videoFile as File, userId);
+                    uploadId = upload.upload_id;
+                    setResolvedUploadId(upload.upload_id);
+                } else {
+                    setProgressMessage("Using downloaded upload source...");
+                }
+                if (!uploadId) {
+                    throw new Error("Upload source is missing. Re-upload or re-run URL download.");
+                }
                 run = await runMultimodalAudit({
                     source_mode: "upload",
                     platform: selectedPlatform,
-                    upload_id: upload.upload_id,
+                    upload_id: uploadId,
                     retention_points: retentionPoints,
                     platform_metrics: platformMetrics,
                     user_id: userId,
@@ -411,6 +542,14 @@ export default function NewAuditPage() {
                                         className="w-full rounded-xl border border-[#d8d8d8] bg-white px-3 py-2 text-sm text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
                                         disabled={running}
                                     />
+                                    <button
+                                        type="button"
+                                        onClick={() => void handleDownloadUrlToUpload()}
+                                        disabled={running || downloadingMedia || !videoUrl.trim()}
+                                        className="w-full rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-xs font-medium text-[#333] hover:bg-[#efefef] disabled:opacity-50"
+                                    >
+                                        {downloadingMedia ? "Downloading..." : "Download URL to Upload Mode"}
+                                    </button>
                                     {(() => {
                                         const inferred = inferPlatformFromUrl(videoUrl);
                                         if (!inferred || inferred === selectedPlatform) {
@@ -422,6 +561,17 @@ export default function NewAuditPage() {
                                             </p>
                                         );
                                     })()}
+                                    {mediaJob && mediaJob.sourceUrl === videoUrl.trim() && (
+                                        <div className="rounded-xl border border-[#e1e1e1] bg-[#fafafa] px-3 py-2 text-[11px] text-[#666]">
+                                            <p>Media job: {mediaJob.jobId.slice(0, 8)}... • {mediaJob.status} ({mediaJob.progress}%)</p>
+                                            {mediaJob.uploadId && (
+                                                <p className="mt-1 text-[#2f5a2f]">Ready upload id: {mediaJob.uploadId}</p>
+                                            )}
+                                            {mediaJob.errorMessage && (
+                                                <p className="mt-1 text-[#7f3a3a]">{mediaJob.errorMessage}</p>
+                                            )}
+                                        </div>
+                                    )}
                                 </div>
                             ) : (
                                 <div className="space-y-2">
@@ -434,6 +584,11 @@ export default function NewAuditPage() {
                                         disabled={running}
                                     />
                                     <p className="text-[11px] text-[#7b7b7b]">Max 300MB • mp4, mov, m4v, webm, avi, mkv</p>
+                                    {resolvedUploadId && !videoFile && (
+                                        <div className="rounded-xl border border-[#d9e6d9] bg-[#eef8ee] px-3 py-2 text-[11px] text-[#2f5a2f]">
+                                            Using downloaded source upload id: {resolvedUploadId}
+                                        </div>
+                                    )}
                                 </div>
                             )}
 
@@ -498,7 +653,7 @@ export default function NewAuditPage() {
                                         <p className="mt-2 break-all text-sm text-[#252525]">
                                             {sourceMode === "url"
                                                 ? (videoUrl.trim() || "No URL added yet")
-                                                : (videoFile?.name || "No file selected yet")}
+                                                : (videoFile?.name || (resolvedUploadId ? `Downloaded source (${resolvedUploadId})` : "No file selected yet"))}
                                         </p>
                                     </div>
 

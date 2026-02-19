@@ -117,15 +117,22 @@ Reach functional parity for IG/TikTok competitor discovery and media download wo
     - user scoping on job retrieval
   - run full API + typecheck + smoke + build
 
-### Phase 4: UX Integration (planned)
-- [ ] Competitors page: provider source filters, confidence chips, import actions.
+### Phase 4: UX Integration (completed)
+- [x] Competitors page: provider source filters, confidence chips, import actions.
   - Target files:
     - `apps/web/src/app/competitors/page.tsx`
     - `apps/web/src/lib/api.ts`
-- [ ] Audit page: download job submit/poll/select asset workflow.
+- [x] Audit page: download job submit/poll/select asset workflow.
   - Target files:
     - `apps/web/src/app/audit/new/page.tsx`
     - `apps/web/src/lib/api.ts`
+
+### Phase 4 Detailed Execution (completed)
+- [x] 4.1 Integrate media URL download controls into `/audit/new`.
+- [x] 4.2 Poll media job status and auto-route completed jobs into upload-mode audit input.
+- [x] 4.3 Add explicit fallback/error guidance (download disabled, queue unavailable, failed job).
+- [x] 4.4 Keep manual upload and direct URL modes backward-compatible.
+- [x] 4.5 Add smoke coverage for `audit/new url download -> run audit` and validate web checks.
 
 ### Phase 5: Test/CI Expansion (planned)
 - [ ] API tests for discovery provider merge/dedupe and pagination stability.
@@ -181,6 +188,24 @@ Reach functional parity for IG/TikTok competitor discovery and media download wo
     - `pytest -q tests/test_media_download.py` -> `3 passed`
     - `pytest -q tests/test_audit_router_upload.py tests/test_parity_hardening.py` -> `8 passed`
     - `pytest -q tests analysis/tests` -> `48 passed`
+    - `npx tsc --noEmit` -> pass
     - `npx playwright test tests/smoke.spec.ts --reporter=list` -> `5 passed`
     - `npm run build` -> pass
+- 2026-02-19: Phase 4 completed.
+  - Added URL-to-upload media download flow in `apps/web/src/app/audit/new/page.tsx`:
+    - start download job from URL mode
+    - poll download status with progress messaging
+    - auto-switch to upload mode with resolved `upload_id`
+    - preserve direct URL and manual upload compatibility
+  - Added smoke coverage in `apps/web/tests/smoke.spec.ts`:
+    - mocked `/media/download` and `/media/download/{job_id}` routes
+    - new flow `audit/new url download -> upload source -> run audit`
+  - Fixed smoke selector regression introduced by new "Download URL to Upload Mode" button (exact match for Upload tab).
+  - Verified with:
     - `npx tsc --noEmit` -> pass
+    - `npx playwright test tests/smoke.spec.ts --reporter=list` -> `6 passed`
+    - `npm run build` -> pass
+  - Stability fix during validation:
+    - Added test-only rate-limit bypass hook in `apps/api/routers/rate_limit.py` via `app.state.disable_rate_limits`.
+    - Added autouse fixture in `apps/api/tests/conftest.py` to enforce deterministic integration tests.
+    - Re-verified API suite: `pytest -q tests analysis/tests` -> `48 passed`.

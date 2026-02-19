@@ -324,6 +324,7 @@ async function installApiMocks(page: Page) {
     const pollCountByAudit: Record<string, number> = {};
     const draftSnapshots: any[] = [];
     const outcomes: Array<any> = [];
+    const mediaJobs: Record<string, any> = {};
 
     await page.route("http://localhost:8000/**", async (route) => {
         const request = route.request();
@@ -573,6 +574,65 @@ async function installApiMocks(page: Page) {
                     insufficient_data: outcomes.length < 5,
                     recommendations: ["Keep ingesting outcomes for tighter confidence."],
                 },
+            });
+            return;
+        }
+
+        if (method === "POST" && path === "/media/download") {
+            const payload = request.postDataJSON() as any;
+            const jobId = `media-job-${Object.keys(mediaJobs).length + 1}`;
+            mediaJobs[jobId] = {
+                job_id: jobId,
+                platform: payload.platform || "instagram",
+                source_url: payload.source_url || "",
+                status: "queued",
+                progress: 0,
+                attempts: 0,
+                max_attempts: 3,
+                queue_job_id: `media:${jobId}`,
+                media_asset_id: null,
+                upload_id: null,
+                error_code: null,
+                error_message: null,
+                poll_count: 0,
+            };
+            await json(200, mediaJobs[jobId]);
+            return;
+        }
+
+        if (method === "GET" && path.startsWith("/media/download/")) {
+            const jobId = path.split("/").pop() || "";
+            const row = mediaJobs[jobId];
+            if (!row) {
+                await json(404, { detail: "Media download job not found" });
+                return;
+            }
+            row.poll_count += 1;
+            if (row.poll_count >= 3) {
+                row.status = "completed";
+                row.progress = 100;
+                row.upload_id = row.upload_id || `upload-media-${jobId}`;
+                row.media_asset_id = row.media_asset_id || `asset-${jobId}`;
+            } else if (row.poll_count >= 2) {
+                row.status = "processing";
+                row.progress = 70;
+            } else {
+                row.status = "downloading";
+                row.progress = 35;
+            }
+            await json(200, {
+                job_id: row.job_id,
+                platform: row.platform,
+                source_url: row.source_url,
+                status: row.status,
+                progress: row.progress,
+                attempts: row.attempts,
+                max_attempts: row.max_attempts,
+                queue_job_id: row.queue_job_id,
+                media_asset_id: row.media_asset_id,
+                upload_id: row.upload_id,
+                error_code: row.error_code,
+                error_message: row.error_message,
             });
             return;
         }
@@ -998,7 +1058,7 @@ test("upload -> score -> recommendations render smoke flow", async ({ page }) =>
     await installLocalAuthState(page);
 
     await page.goto("/audit/new");
-    await page.getByRole("button", { name: "Upload" }).click();
+    await page.getByRole("button", { name: "Upload", exact: true }).click();
     await page.setInputFiles('input[type="file"]', {
         name: "sample.mp4",
         mimeType: "video/mp4",
@@ -1011,6 +1071,23 @@ test("upload -> score -> recommendations render smoke flow", async ({ page }) =>
     await expect(page.getByRole("heading", { name: "Before You Post: Top Edits" })).toBeVisible();
     await expect(page.getByText("Improve CTA Style")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Do This Next (Velocity Actions)" })).toBeVisible();
+});
+
+test("audit/new url download -> upload source -> run audit", async ({ page }) => {
+    await installApiMocks(page);
+    await installLocalAuthState(page);
+
+    await page.goto("/audit/new");
+    await page.locator("select").first().selectOption("instagram");
+    await page.getByPlaceholder("https://www.youtube.com/watch?v=... / instagram.com/reel/... / tiktok.com/...").fill("https://www.instagram.com/reel/C1234567890/");
+    await page.getByRole("button", { name: "Download URL to Upload Mode" }).click();
+
+    await expect(page.getByText(/Media download completed\. Using downloaded upload source/i)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/Using downloaded source upload id:/i)).toBeVisible();
+
+    await page.getByRole("button", { name: "Run Audit" }).click();
+    await expect(page).toHaveURL(new RegExp(`/report/${MOCK_IG_AUDIT_ID}$`), { timeout: 20_000 });
+    await expect(page.getByText(/Report platform: instagram/i)).toBeVisible();
 });
 
 test("research -> variants -> rescore smoke flow", async ({ page }) => {
@@ -1068,7 +1145,7 @@ test("instagram parity -> connect -> discover -> blueprint -> upload audit -> re
 
     await page.goto("/audit/new");
     await page.locator("select").first().selectOption("instagram");
-    await page.getByRole("button", { name: "Upload" }).click();
+    await page.getByRole("button", { name: "Upload", exact: true }).click();
     await page.setInputFiles('input[type="file"]', {
         name: "sample.mp4",
         mimeType: "video/mp4",

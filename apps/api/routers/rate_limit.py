@@ -41,6 +41,9 @@ def rate_limit(prefix: str, limit: int, window_seconds: int) -> Callable[[], Non
     """Return a FastAPI dependency that enforces per-client request quotas."""
 
     async def _dependency(request: Request):
+        if getattr(request.app.state, "disable_rate_limits", False):
+            return
+
         client_id = _client_identifier(request)
         key = f"spc:rate:{prefix}:{client_id}"
 
