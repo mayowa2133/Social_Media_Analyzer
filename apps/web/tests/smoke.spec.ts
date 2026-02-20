@@ -1115,7 +1115,7 @@ test("research -> variants -> rescore smoke flow", async ({ page }) => {
     await expect(page.getByText(/Score 81/)).toBeVisible();
 });
 
-test("instagram parity -> connect -> discover -> blueprint -> upload audit -> report smoke flow", async ({ page }) => {
+test("instagram parity -> connect -> discover -> import -> download -> audit -> report smoke flow", async ({ page }) => {
     await installApiMocks(page);
     await installLocalAuthState(page);
 
@@ -1145,12 +1145,10 @@ test("instagram parity -> connect -> discover -> blueprint -> upload audit -> re
 
     await page.goto("/audit/new");
     await page.locator("select").first().selectOption("instagram");
-    await page.getByRole("button", { name: "Upload", exact: true }).click();
-    await page.setInputFiles('input[type="file"]', {
-        name: "sample.mp4",
-        mimeType: "video/mp4",
-        buffer: Buffer.from("synthetic-video-content"),
-    });
+    await page.getByPlaceholder("https://www.youtube.com/watch?v=... / instagram.com/reel/... / tiktok.com/...").fill("https://www.instagram.com/reel/C1234567890/");
+    await page.getByRole("button", { name: "Download URL to Upload Mode" }).click();
+    await expect(page.getByText(/Media download completed\. Using downloaded upload source/i)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/Using downloaded source upload id:/i)).toBeVisible();
     await page.getByRole("button", { name: "Run Audit" }).click();
 
     await expect(page).toHaveURL(new RegExp(`/report/${MOCK_IG_AUDIT_ID}$`), { timeout: 20_000 });

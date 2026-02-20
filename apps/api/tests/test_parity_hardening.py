@@ -309,3 +309,71 @@ async def test_competitor_discover_community_graph_source_for_tiktok(parity_clie
     assert candidate["source"] in {"community_graph", "research_corpus", "manual_url_seed", "official_api"}
     assert candidate["confidence_tier"] in {"low", "medium", "high"}
     assert isinstance(candidate.get("evidence"), list)
+
+
+@pytest.mark.asyncio
+async def test_competitor_discover_merges_sources_and_marks_tracked(parity_client):
+    client, session_maker = parity_client
+    other_user_id = "parity-fusion-user"
+
+    async with session_maker() as session:
+        session.add(User(id=other_user_id, email="fusion@example.com"))
+        session.add_all(
+            [
+                ResearchItem(
+                    id="ri-fusion-ig",
+                    user_id=PARITY_USER_ID,
+                    platform="instagram",
+                    source_type="capture",
+                    creator_handle="@ai_newslab",
+                    creator_display_name="AI News Lab",
+                    title="AI hooks breakdown",
+                    caption="ai_newslab retention test",
+                    external_id="ai_newslab",
+                    metrics_json={"views": 110000, "likes": 5200, "comments": 220, "shares": 180, "saves": 130},
+                    media_meta_json={"creator_id": "ai_newslab"},
+                ),
+                Competitor(
+                    id="comp-fusion-other",
+                    user_id=other_user_id,
+                    platform="instagram",
+                    handle="@ai_newslab",
+                    external_id="ai_newslab",
+                    display_name="AI News Lab",
+                    subscriber_count="49000",
+                ),
+                Competitor(
+                    id="comp-fusion-tracked",
+                    user_id=PARITY_USER_ID,
+                    platform="instagram",
+                    handle="@ai_newslab",
+                    external_id="ai_newslab",
+                    display_name="AI News Lab",
+                    subscriber_count="33000",
+                ),
+            ]
+        )
+        await session.commit()
+
+    response = await client.post(
+        "/competitors/discover",
+        json={
+            "platform": "instagram",
+            "query": "ai_newslab",
+            "page": 1,
+            "limit": 10,
+            "user_id": PARITY_USER_ID,
+        },
+        headers=PARITY_AUTH_HEADER,
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total_count"] >= 1
+
+    candidate = payload["candidates"][0]
+    assert candidate["external_id"] == "ai_newslab"
+    assert candidate["already_tracked"] is True
+    assert int(candidate.get("source_count", 0)) >= 2
+    source_labels = set(candidate.get("source_labels") or [])
+    assert "research_corpus" in source_labels
+    assert "community_graph" in source_labels

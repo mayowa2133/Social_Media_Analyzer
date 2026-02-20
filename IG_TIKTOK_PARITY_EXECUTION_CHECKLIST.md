@@ -13,8 +13,8 @@ Reach functional parity for IG/TikTok competitor discovery and media download wo
 - [x] `Phase 1` Discovery engine foundation (provider-based discovery service + deterministic merge/dedupe).
 - [x] `Phase 2` Discovery expansion for IG/TikTok quality and confidence signals.
 - [x] `Phase 3` Media download pipeline parity for IG/TikTok (queued jobs + status + audit integration).
-- [ ] `Phase 4` UI integration and fallback UX hardening.
-- [ ] `Phase 5` Test + smoke coverage expansion for parity workflows.
+- [x] `Phase 4` UI integration and fallback UX hardening.
+- [x] `Phase 5` Test + smoke coverage expansion for parity workflows.
 
 ## File-Mapped Execution Plan
 
@@ -134,15 +134,15 @@ Reach functional parity for IG/TikTok competitor discovery and media download wo
 - [x] 4.4 Keep manual upload and direct URL modes backward-compatible.
 - [x] 4.5 Add smoke coverage for `audit/new url download -> run audit` and validate web checks.
 
-### Phase 5: Test/CI Expansion (planned)
-- [ ] API tests for discovery provider merge/dedupe and pagination stability.
+### Phase 5: Test/CI Expansion (completed)
+- [x] API tests for discovery provider merge/dedupe and pagination stability.
   - Target files:
     - `apps/api/tests/test_parity_hardening.py`
     - `apps/api/tests/test_competitor_discovery.py`
-- [ ] API tests for media download job lifecycle.
+- [x] API tests for media download job lifecycle.
   - Target files:
     - `apps/api/tests/test_media_download.py` (new)
-- [ ] Playwright parity smoke:
+- [x] Playwright parity smoke:
   - `connect/manual -> discover -> import -> download -> audit -> report`
   - Target files:
     - `apps/web/tests/smoke.spec.ts`
@@ -209,3 +209,24 @@ Reach functional parity for IG/TikTok competitor discovery and media download wo
     - Added test-only rate-limit bypass hook in `apps/api/routers/rate_limit.py` via `app.state.disable_rate_limits`.
     - Added autouse fixture in `apps/api/tests/conftest.py` to enforce deterministic integration tests.
     - Re-verified API suite: `pytest -q tests analysis/tests` -> `48 passed`.
+- 2026-02-20: Phase 5 completed.
+  - Added dedicated discovery service tests in `apps/api/tests/test_competitor_discovery.py`:
+    - cross-source merge/dedupe (`research_corpus` + `community_graph`)
+    - deterministic pagination stability across repeated calls
+    - YouTube query requirement guard
+  - Expanded endpoint parity coverage in `apps/api/tests/test_parity_hardening.py`:
+    - merged-source discovery response with tracked identity assertions
+  - Expanded media lifecycle tests in `apps/api/tests/test_media_download.py`:
+    - disabled download feature returns deterministic `503`
+    - async processing failure transitions job to `failed` with `download_failed`
+    - missing job lookup returns `404`
+  - Updated Playwright parity chain in `apps/web/tests/smoke.spec.ts`:
+    - `connect -> discover -> import -> download -> audit -> report`
+  - Verified with:
+    - `pytest -q tests/test_competitor_discovery.py tests/test_parity_hardening.py` -> `10 passed`
+    - `pytest -q tests/test_media_download.py` -> `6 passed`
+    - `pytest -q tests analysis/tests` -> `55 passed`
+    - `npx tsc --noEmit` -> pass
+    - `npx playwright test tests/smoke.spec.ts --reporter=list` -> `6 passed`
+    - `npm run build` -> pass
+    - note: one transient `tsc` failure occurred only when run in parallel with `next build`; sequential runs passed.

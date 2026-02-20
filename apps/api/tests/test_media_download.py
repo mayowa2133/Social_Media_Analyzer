@@ -187,3 +187,89 @@ async def test_media_download_job_scoped_by_authenticated_user(media_client):
         headers=OTHER_AUTH_HEADER,
     )
     assert forbidden_resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_media_download_disabled_returns_deterministic_503(media_client):
+    client, session_maker = media_client
+    with patch("routers.media.settings.ALLOW_EXTERNAL_MEDIA_DOWNLOAD", False):
+        response = await client.post(
+            "/media/download",
+            json={
+                "platform": "instagram",
+                "source_url": "https://instagram.com/reel/disabled-path",
+                "user_id": MEDIA_USER_ID,
+            },
+            headers=MEDIA_AUTH_HEADER,
+        )
+
+    assert response.status_code == 503
+    detail = str(response.json().get("detail") or "")
+    assert "External media download is disabled" in detail
+    assert "/audit/new" in detail
+
+    async with session_maker() as session:
+        result = await session.execute(
+            select(MediaDownloadJob).where(MediaDownloadJob.user_id == MEDIA_USER_ID)
+        )
+        assert result.scalars().first() is None
+
+
+@pytest.mark.asyncio
+async def test_media_download_processing_failure_marks_job_failed(media_client):
+    client, session_maker = media_client
+    with (
+        patch("routers.media.settings.ALLOW_EXTERNAL_MEDIA_DOWNLOAD", True),
+        patch("routers.media.enqueue_media_download_job", side_effect=_enqueue_media_async),
+        patch("services.media_download.download_video", side_effect=RuntimeError("downloader crashed")),
+    ):
+        create_resp = await client.post(
+            "/media/download",
+            json={
+                "platform": "instagram",
+                "source_url": "https://instagram.com/reel/failure-path",
+                "user_id": MEDIA_USER_ID,
+            },
+            headers=MEDIA_AUTH_HEADER,
+        )
+        assert create_resp.status_code == 200
+        job_id = create_resp.json()["job_id"]
+
+        status_payload = create_resp.json()
+        for _ in range(30):
+            status_resp = await client.get(
+                f"/media/download/{job_id}?user_id={MEDIA_USER_ID}",
+                headers=MEDIA_AUTH_HEADER,
+            )
+            assert status_resp.status_code == 200
+            status_payload = status_resp.json()
+            if status_payload["status"] == "failed":
+                break
+            await asyncio.sleep(0.05)
+
+    assert status_payload["status"] == "failed"
+    assert status_payload["error_code"] == "download_failed"
+    assert "downloader crashed" in str(status_payload.get("error_message") or "")
+    assert status_payload["progress"] == 100
+    assert status_payload.get("upload_id") in {None, ""}
+    assert status_payload.get("media_asset_id") in {None, ""}
+
+    async with session_maker() as session:
+        result = await session.execute(
+            select(MediaDownloadJob).where(MediaDownloadJob.id == job_id)
+        )
+        row = result.scalar_one_or_none()
+        assert row is not None
+        assert row.status == "failed"
+        assert row.error_code == "download_failed"
+
+
+@pytest.mark.asyncio
+async def test_media_download_status_missing_job_returns_404(media_client):
+    client, _ = media_client
+    response = await client.get(
+        "/media/download/non-existent-job-id?user_id=media-user",
+        headers=MEDIA_AUTH_HEADER,
+    )
+    assert response.status_code == 404
+    assert "not found" in str(response.json().get("detail") or "").lower()
