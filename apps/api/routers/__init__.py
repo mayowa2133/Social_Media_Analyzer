@@ -3,6 +3,7 @@
 from . import (
     health,
     auth,
+    ux,
     youtube,
     analysis,
     audit,

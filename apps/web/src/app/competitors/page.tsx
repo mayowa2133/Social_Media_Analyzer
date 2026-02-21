@@ -29,7 +29,9 @@ import {
     SeriesPlanResult,
     ViralScriptResult,
 } from "@/lib/api";
+import { StudioAppShell } from "@/components/app-shell";
 import { BlueprintDisplay } from "@/components/blueprint-display";
+import { FlowStepper } from "@/components/flow-stepper";
 
 function formatMetric(value: number): string {
     return value.toLocaleString();
@@ -46,6 +48,11 @@ function toChannelUrl(suggestion: RecommendedCompetitor): string {
 }
 
 const SUGGESTION_PAGE_SIZE = 8;
+const PLATFORM_LABELS: Record<CompetitorAnalysisPlatform, string> = {
+    youtube: "YouTube",
+    instagram: "Instagram",
+    tiktok: "TikTok",
+};
 
 export default function CompetitorsPage() {
     const [competitors, setCompetitors] = useState<Competitor[]>([]);
@@ -82,6 +89,8 @@ export default function CompetitorsPage() {
     const [importingDiscovered, setImportingDiscovered] = useState(false);
     const [discoverSourceFilter, setDiscoverSourceFilter] = useState<string>("all");
     const [discoverConfidenceFilter, setDiscoverConfidenceFilter] = useState<"all" | "low" | "medium" | "high">("all");
+    const [showAdvancedImportTools, setShowAdvancedImportTools] = useState(false);
+    const [showAdvancedDiscoveryTools, setShowAdvancedDiscoveryTools] = useState(false);
 
     const [seriesInsights, setSeriesInsights] = useState<SeriesIntelligence | null>(null);
     const [loadingSeries, setLoadingSeries] = useState(false);
@@ -589,49 +598,50 @@ export default function CompetitorsPage() {
         video_ideas: [],
     };
     const seriesRows = seriesInsights?.series || blueprint?.series_intelligence?.series || [];
+    const analysisPlatformLabel = PLATFORM_LABELS[analysisPlatform];
+    const analysisCreatorNoun = analysisPlatform === "youtube" ? "channels" : "creators";
+    const analysisPlatformCompetitorCount = competitors.filter((item) => item.platform === analysisPlatform).length;
+    const hasAnyCompetitors = competitors.length > 0;
+    const hasAnalysisPlatformCompetitors = analysisPlatformCompetitorCount > 0;
+    const fallbackAnalysisPlatform = (["youtube", "instagram", "tiktok"] as CompetitorAnalysisPlatform[]).find((platform) =>
+        competitors.some((item) => item.platform === platform)
+    );
 
     return (
-        <div className="min-h-screen bg-[#e8e8e8] px-3 py-4 md:px-8 md:py-6">
-            <div className="mx-auto w-full max-w-[1500px] overflow-hidden rounded-[30px] border border-[#d8d8d8] bg-[#f5f5f5] shadow-[0_35px_90px_rgba(0,0,0,0.12)]">
-                <header className="flex h-16 items-center justify-between border-b border-[#dfdfdf] bg-[#fafafa] px-4 md:px-6">
-                    <div className="flex items-center gap-4">
-                        <Link href="/" className="text-lg font-bold text-[#1f1f1f]">
-                            SPC Studio
-                        </Link>
-                        <nav className="hidden items-center gap-4 text-sm text-[#6b6b6b] md:flex">
-                            <Link href="/dashboard" className="hover:text-[#151515]">Dashboard</Link>
-                            <Link href="/competitors" className="font-medium text-[#1b1b1b]">Competitors</Link>
-                            <Link href="/research" className="hover:text-[#151515]">Research</Link>
-                            <Link href="/audit/new" className="hover:text-[#151515]">Audit Workspace</Link>
-                        </nav>
-                    </div>
-                    <div className="hidden items-center gap-2 lg:flex">
-                        <select
-                            value={analysisPlatform}
-                            onChange={(e) => setAnalysisPlatform(e.target.value as CompetitorAnalysisPlatform)}
-                            className="rounded-xl border border-[#d5d5d5] bg-white px-3 py-1.5 text-xs text-[#444] focus:border-[#bbbbbb] focus:outline-none"
-                        >
-                            <option value="youtube">YouTube Analysis</option>
-                            <option value="instagram">Instagram Analysis</option>
-                            <option value="tiktok">TikTok Analysis</option>
-                        </select>
-                        <button
-                            type="button"
-                            onClick={handleGenerateBlueprint}
-                            disabled={generating || !competitors.some((item) => item.platform === analysisPlatform)}
-                            className="rounded-xl border border-[#d5d5d5] bg-white px-3 py-1.5 text-xs text-[#444] transition hover:bg-[#f2f2f2] disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                            {generating ? "Analyzing..." : `Generate ${analysisPlatform} Blueprint`}
-                        </button>
-                    </div>
-                </header>
-
-                <div className="grid min-h-[calc(100vh-8.5rem)] grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)_330px]">
-                    <aside className="border-b border-[#dfdfdf] bg-[#f8f8f8] p-4 xl:border-b-0 xl:border-r">
-                        <div className="rounded-2xl border border-[#dcdcdc] bg-white p-4">
-                            <h2 className="mb-2 text-sm font-semibold text-[#222]">Add Competitor</h2>
+        <StudioAppShell
+            rightSlot={
+                <div className="hidden items-center gap-2 lg:flex">
+                    <select
+                        value={analysisPlatform}
+                        onChange={(e) => setAnalysisPlatform(e.target.value as CompetitorAnalysisPlatform)}
+                        className="rounded-xl border border-[#d5d5d5] bg-white px-3 py-1.5 text-xs text-[#444] focus:border-[#bbbbbb] focus:outline-none"
+                    >
+                        <option value="youtube">YouTube Analysis</option>
+                        <option value="instagram">Instagram Analysis</option>
+                        <option value="tiktok">TikTok Analysis</option>
+                    </select>
+                    <button
+                        type="button"
+                        onClick={handleGenerateBlueprint}
+                        disabled={generating || !hasAnalysisPlatformCompetitors}
+                        className="rounded-xl border border-[#d5d5d5] bg-white px-3 py-1.5 text-xs text-[#444] transition hover:bg-[#f2f2f2] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        {generating ? "Analyzing..." : `Generate ${analysisPlatform} Blueprint`}
+                    </button>
+                </div>
+            }
+        >
+            <div className="grid min-h-[calc(100vh-8.5rem)] grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)_330px]">
+                        <aside className="border-b border-[#dfdfdf] bg-[#f8f8f8] p-4 xl:border-b-0 xl:border-r">
+                            <div className="rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                                <div className="mb-2 flex items-center justify-between gap-2">
+                                    <h2 className="text-sm font-semibold text-[#222]">Add Competitor</h2>
+                                    <span className="rounded-full border border-[#d9d9d9] bg-[#f7f7f7] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#666]">
+                                        Primary Workflow
+                                    </span>
+                                </div>
                             <p className="mb-3 text-xs text-[#6d6d6d]">
-                                Track channels in your niche and benchmark their winning patterns.
+                                Start here: track creators in your niche and benchmark their winning patterns.
                             </p>
                             <form onSubmit={handleAddCompetitor} className="space-y-3">
                                 <select
@@ -673,127 +683,157 @@ export default function CompetitorsPage() {
 
                         {analysisPlatform !== "youtube" && (
                             <div className="mt-4 rounded-2xl border border-[#dcdcdc] bg-white p-4">
-                                <h3 className="mb-2 text-sm font-semibold text-[#222]">
-                                    Import {analysisPlatform === "instagram" ? "Instagram" : "TikTok"} Competitors
-                                </h3>
+                                <div className="mb-2 flex items-center justify-between gap-2">
+                                    <h3 className="text-sm font-semibold text-[#222]">Advanced Import Tools</h3>
+                                    <span className="rounded-full border border-[#d9d9d9] bg-[#f7f7f7] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#666]">
+                                        Tertiary Tools
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowAdvancedImportTools((prev) => !prev)}
+                                        className="rounded-lg border border-[#d9d9d9] bg-white px-2 py-1 text-[11px] text-[#555] hover:bg-[#efefef]"
+                                    >
+                                        {showAdvancedImportTools ? "Hide" : "Show"}
+                                    </button>
+                                </div>
                                 <p className="mb-3 text-xs text-[#6d6d6d]">
-                                    Auto-create tracked competitors from your Research library creator metadata.
+                                    Import competitors from research metadata when you need a broader benchmark set.
                                 </p>
-                                <input
-                                    type="text"
-                                    value={importNiche}
-                                    onChange={(e) => setImportNiche(e.target.value)}
-                                    placeholder="Optional niche filter (e.g. AI News)"
-                                    className="w-full rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-sm text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
-                                />
-                                <button
-                                    type="button"
-                                    onClick={() => void handleImportCompetitorsFromResearch()}
-                                    disabled={importingFromResearch}
-                                    className="mt-3 w-full rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-sm font-medium text-[#2f2f2f] hover:bg-[#efefef] disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                    {importingFromResearch ? "Importing..." : "Import From Research"}
-                                </button>
-                                {importStatus && (
-                                    <p className="mt-2 text-[11px] text-[#6d6d6d]">{importStatus}</p>
+                                {showAdvancedImportTools && (
+                                    <>
+                                        <input
+                                            type="text"
+                                            value={importNiche}
+                                            onChange={(e) => setImportNiche(e.target.value)}
+                                            placeholder="Optional niche filter (e.g. AI News)"
+                                            className="w-full rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-sm text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleImportCompetitorsFromResearch()}
+                                            disabled={importingFromResearch}
+                                            className="mt-3 w-full rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-sm font-medium text-[#2f2f2f] hover:bg-[#efefef] disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                            {importingFromResearch ? "Importing..." : "Import From Research"}
+                                        </button>
+                                        {importStatus && (
+                                            <p className="mt-2 text-[11px] text-[#6d6d6d]">{importStatus}</p>
+                                        )}
+                                    </>
                                 )}
                             </div>
                         )}
 
                         {analysisPlatform !== "youtube" && (
                             <div className="mt-4 rounded-2xl border border-[#dcdcdc] bg-white p-4">
-                                <h3 className="mb-2 text-sm font-semibold text-[#222]">Discover Competitors</h3>
+                                <div className="mb-2 flex items-center justify-between gap-2">
+                                    <h3 className="text-sm font-semibold text-[#222]">Advanced Discovery Tools</h3>
+                                    <span className="rounded-full border border-[#d9d9d9] bg-[#f7f7f7] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#666]">
+                                        Tertiary Tools
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowAdvancedDiscoveryTools((prev) => !prev)}
+                                        className="rounded-lg border border-[#d9d9d9] bg-white px-2 py-1 text-[11px] text-[#555] hover:bg-[#efefef]"
+                                    >
+                                        {showAdvancedDiscoveryTools ? "Hide" : "Show"}
+                                    </button>
+                                </div>
                                 <p className="mb-3 text-xs text-[#6d6d6d]">
                                     Hybrid-safe discover from your research corpus with deterministic quality ranking.
                                 </p>
-                                <form onSubmit={handleDiscoverCompetitorCandidates} className="space-y-2">
-                                    <input
-                                        type="text"
-                                        value={discoverQuery}
-                                        onChange={(e) => setDiscoverQuery(e.target.value)}
-                                        placeholder={`Find ${analysisPlatform} creators by niche (optional)`}
-                                        className="w-full rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-sm text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
-                                        disabled={discovering || importingDiscovered}
-                                    />
-                                    <button
-                                        type="submit"
-                                        disabled={discovering || importingDiscovered}
-                                        className="w-full rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-sm font-medium text-[#2f2f2f] hover:bg-[#efefef] disabled:opacity-50"
-                                    >
-                                        {discovering ? "Discovering..." : "Discover Candidates"}
-                                    </button>
-                                </form>
-                                {discoverError && (
-                                    <p className="mt-2 text-[11px] text-[#7f3a3a]">{discoverError}</p>
-                                )}
-                                {discoveredCandidates.length > 0 && (
-                                    <div className="mt-3 space-y-2">
-                                        <div className="grid grid-cols-2 gap-2">
-                                            <select
-                                                value={discoverSourceFilter}
-                                                onChange={(e) => setDiscoverSourceFilter(e.target.value)}
-                                                className="rounded-lg border border-[#d9d9d9] bg-white px-2 py-1 text-xs text-[#444] focus:border-[#bcbcbc] focus:outline-none"
+                                {showAdvancedDiscoveryTools && (
+                                    <>
+                                        <form onSubmit={handleDiscoverCompetitorCandidates} className="space-y-2">
+                                            <input
+                                                type="text"
+                                                value={discoverQuery}
+                                                onChange={(e) => setDiscoverQuery(e.target.value)}
+                                                placeholder={`Find ${analysisPlatform} creators by niche (optional)`}
+                                                className="w-full rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-3 py-2 text-sm text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                                disabled={discovering || importingDiscovered}
+                                            />
+                                            <button
+                                                type="submit"
+                                                disabled={discovering || importingDiscovered}
+                                                className="w-full rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-sm font-medium text-[#2f2f2f] hover:bg-[#efefef] disabled:opacity-50"
                                             >
-                                                <option value="all">All Sources</option>
-                                                <option value="official_api">Official API</option>
-                                                <option value="research_corpus">Research Corpus</option>
-                                                <option value="community_graph">Community Graph</option>
-                                                <option value="manual_url_seed">Manual URL Seed</option>
-                                            </select>
-                                            <select
-                                                value={discoverConfidenceFilter}
-                                                onChange={(e) => setDiscoverConfidenceFilter(e.target.value as "all" | "low" | "medium" | "high")}
-                                                className="rounded-lg border border-[#d9d9d9] bg-white px-2 py-1 text-xs text-[#444] focus:border-[#bcbcbc] focus:outline-none"
-                                            >
-                                                <option value="all">All Confidence</option>
-                                                <option value="high">High Confidence</option>
-                                                <option value="medium">Medium Confidence</option>
-                                                <option value="low">Low Confidence</option>
-                                            </select>
-                                        </div>
-                                        <div className="max-h-56 space-y-2 overflow-auto rounded-xl border border-[#e1e1e1] bg-[#fafafa] p-2">
-                                            {filteredDiscoveredCandidates.map((candidate) => (
-                                                <label key={candidate.external_id} className="flex items-start gap-2 rounded-lg border border-[#e8e8e8] bg-white p-2">
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={selectedDiscoverIds.includes(candidate.external_id)}
-                                                        onChange={() => toggleDiscoveredSelection(candidate.external_id)}
-                                                        disabled={candidate.already_tracked || importingDiscovered}
-                                                    />
-                                                    <div className="min-w-0">
-                                                        <p className="truncate text-xs font-semibold text-[#222]">
-                                                            {candidate.display_name}
-                                                            {candidate.already_tracked ? " (tracked)" : ""}
+                                                {discovering ? "Discovering..." : "Discover Candidates"}
+                                            </button>
+                                        </form>
+                                        {discoverError && (
+                                            <p className="mt-2 text-[11px] text-[#7f3a3a]">{discoverError}</p>
+                                        )}
+                                        {discoveredCandidates.length > 0 && (
+                                            <div className="mt-3 space-y-2">
+                                                <div className="grid grid-cols-2 gap-2">
+                                                    <select
+                                                        value={discoverSourceFilter}
+                                                        onChange={(e) => setDiscoverSourceFilter(e.target.value)}
+                                                        className="rounded-lg border border-[#d9d9d9] bg-white px-2 py-1 text-xs text-[#444] focus:border-[#bcbcbc] focus:outline-none"
+                                                    >
+                                                        <option value="all">All Sources</option>
+                                                        <option value="official_api">Official API</option>
+                                                        <option value="research_corpus">Research Corpus</option>
+                                                        <option value="community_graph">Community Graph</option>
+                                                        <option value="manual_url_seed">Manual URL Seed</option>
+                                                    </select>
+                                                    <select
+                                                        value={discoverConfidenceFilter}
+                                                        onChange={(e) => setDiscoverConfidenceFilter(e.target.value as "all" | "low" | "medium" | "high")}
+                                                        className="rounded-lg border border-[#d9d9d9] bg-white px-2 py-1 text-xs text-[#444] focus:border-[#bcbcbc] focus:outline-none"
+                                                    >
+                                                        <option value="all">All Confidence</option>
+                                                        <option value="high">High Confidence</option>
+                                                        <option value="medium">Medium Confidence</option>
+                                                        <option value="low">Low Confidence</option>
+                                                    </select>
+                                                </div>
+                                                <div className="max-h-56 space-y-2 overflow-auto rounded-xl border border-[#e1e1e1] bg-[#fafafa] p-2">
+                                                    {filteredDiscoveredCandidates.map((candidate) => (
+                                                        <label key={candidate.external_id} className="flex items-start gap-2 rounded-lg border border-[#e8e8e8] bg-white p-2">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={selectedDiscoverIds.includes(candidate.external_id)}
+                                                                onChange={() => toggleDiscoveredSelection(candidate.external_id)}
+                                                                disabled={candidate.already_tracked || importingDiscovered}
+                                                            />
+                                                            <div className="min-w-0">
+                                                                <p className="truncate text-xs font-semibold text-[#222]">
+                                                                    {candidate.display_name}
+                                                                    {candidate.already_tracked ? " (tracked)" : ""}
+                                                                </p>
+                                                                <p className="text-[11px] text-[#666]">
+                                                                    {candidate.handle} · score {candidate.quality_score.toFixed(1)} · {candidate.confidence_tier || "low"} confidence
+                                                                </p>
+                                                                <p className="text-[11px] text-[#777]">
+                                                                    src {candidate.source} · {candidate.source_count || 1} source{(candidate.source_count || 1) > 1 ? "s" : ""}
+                                                                </p>
+                                                                {candidate.evidence && candidate.evidence.length > 0 && (
+                                                                    <p className="mt-1 line-clamp-2 text-[10px] text-[#7a7a7a]">
+                                                                        {candidate.evidence.slice(0, 2).join(" ")}
+                                                                    </p>
+                                                                )}
+                                                            </div>
+                                                        </label>
+                                                    ))}
+                                                    {filteredDiscoveredCandidates.length === 0 && (
+                                                        <p className="rounded-lg border border-dashed border-[#ddd] bg-white px-2 py-2 text-[11px] text-[#777]">
+                                                            No candidates match your source/confidence filters.
                                                         </p>
-                                                        <p className="text-[11px] text-[#666]">
-                                                            {candidate.handle} · score {candidate.quality_score.toFixed(1)} · {candidate.confidence_tier || "low"} confidence
-                                                        </p>
-                                                        <p className="text-[11px] text-[#777]">
-                                                            src {candidate.source} · {candidate.source_count || 1} source{(candidate.source_count || 1) > 1 ? "s" : ""}
-                                                        </p>
-                                                        {candidate.evidence && candidate.evidence.length > 0 && (
-                                                            <p className="mt-1 line-clamp-2 text-[10px] text-[#7a7a7a]">
-                                                                {candidate.evidence.slice(0, 2).join(" ")}
-                                                            </p>
-                                                        )}
-                                                    </div>
-                                                </label>
-                                            ))}
-                                            {filteredDiscoveredCandidates.length === 0 && (
-                                                <p className="rounded-lg border border-dashed border-[#ddd] bg-white px-2 py-2 text-[11px] text-[#777]">
-                                                    No candidates match your source/confidence filters.
-                                                </p>
-                                            )}
-                                        </div>
-                                        <button
-                                            type="button"
-                                            onClick={() => void handleImportSelectedDiscovered()}
-                                            disabled={importingDiscovered || selectedImportableCount === 0}
-                                            className="w-full rounded-xl bg-[#1f1f1f] px-3 py-2 text-sm font-semibold text-white hover:bg-[#111] disabled:opacity-50"
-                                        >
-                                            {importingDiscovered ? "Importing..." : `Import Selected (${selectedImportableCount})`}
-                                        </button>
-                                    </div>
+                                                    )}
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => void handleImportSelectedDiscovered()}
+                                                    disabled={importingDiscovered || selectedImportableCount === 0}
+                                                    className="w-full rounded-xl bg-[#1f1f1f] px-3 py-2 text-sm font-semibold text-white hover:bg-[#111] disabled:opacity-50"
+                                                >
+                                                    {importingDiscovered ? "Importing..." : `Import Selected (${selectedImportableCount})`}
+                                                </button>
+                                            </div>
+                                        )}
+                                    </>
                                 )}
                             </div>
                         )}
@@ -818,7 +858,7 @@ export default function CompetitorsPage() {
                             <div className="space-y-2">
                                 <button
                                     onClick={handleGenerateBlueprint}
-                                    disabled={generating || !competitors.some((item) => item.platform === analysisPlatform)}
+                                    disabled={generating || !hasAnalysisPlatformCompetitors}
                                     className="w-full rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-sm font-medium text-[#2f2f2f] hover:bg-[#efefef] disabled:cursor-not-allowed disabled:opacity-50"
                                 >
                                     {generating ? "Generating..." : `Generate ${analysisPlatform} Strategy Blueprint`}
@@ -855,15 +895,27 @@ export default function CompetitorsPage() {
                     </aside>
 
                     <section className="border-b border-[#dfdfdf] bg-[#f2f2f2] px-4 py-4 md:px-6 xl:border-b-0">
+                        <FlowStepper />
                         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
                             <div>
                                 <h1 className="text-2xl font-bold text-[#1f1f1f] md:text-3xl">Competitor Workspace</h1>
                                 <p className="text-sm text-[#666]">
                                     Build your tracking list and extract strategy blueprints from winning channels.
                                 </p>
+                                <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+                                    <span className="rounded-full border border-[#d9d9d9] bg-white px-2 py-1 text-[#555]">
+                                        Primary: add tracked competitors
+                                    </span>
+                                    <span className="rounded-full border border-[#d9d9d9] bg-white px-2 py-1 text-[#555]">
+                                        Secondary: suggested competitors
+                                    </span>
+                                    <span className="rounded-full border border-[#d9d9d9] bg-white px-2 py-1 text-[#555]">
+                                        Tertiary: advanced import and discovery
+                                    </span>
+                                </div>
                             </div>
                             <div className="rounded-full border border-[#d5d5d5] bg-white px-3 py-1 text-xs text-[#666]">
-                                {competitors.filter((item) => item.platform === analysisPlatform).length} tracked {analysisPlatform} channels
+                                {analysisPlatformCompetitorCount} tracked {analysisPlatformLabel} {analysisCreatorNoun}
                             </div>
                         </div>
 
@@ -897,7 +949,7 @@ export default function CompetitorsPage() {
                                     <button
                                         type="button"
                                         onClick={() => void fetchSeriesInsights(analysisPlatform)}
-                                        disabled={loadingSeries || !competitors.some((item) => item.platform === analysisPlatform)}
+                                        disabled={loadingSeries || !hasAnalysisPlatformCompetitors}
                                         className="rounded-lg border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-1.5 text-xs text-[#444] hover:bg-[#efefef] disabled:cursor-not-allowed disabled:opacity-50"
                                     >
                                         {loadingSeries ? "Refreshing..." : "Refresh"}
@@ -1322,11 +1374,40 @@ export default function CompetitorsPage() {
                             </div>
                         )}
 
-                        {!loading && competitors.length === 0 && !error && (
+                        {!loading && hasAnyCompetitors && !hasAnalysisPlatformCompetitors && !error && (
+                            <div className="rounded-3xl border border-[#e4dbbf] bg-[#fffaf0] p-6 shadow-[0_12px_30px_rgba(0,0,0,0.05)]">
+                                <h2 className="mb-2 text-lg font-bold text-[#5a4b1f]">No {analysisPlatformLabel} competitors in your current list</h2>
+                                <p className="text-sm text-[#6a5b30]">
+                                    You already track competitors on other platforms. Add at least one {analysisPlatformLabel} creator or switch your analysis platform.
+                                </p>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                    {fallbackAnalysisPlatform && fallbackAnalysisPlatform !== analysisPlatform && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setAnalysisPlatform(fallbackAnalysisPlatform)}
+                                            className="rounded-lg border border-[#d8c898] bg-white px-3 py-1.5 text-xs font-medium text-[#6a5b30] hover:bg-[#fffdf6]"
+                                        >
+                                            Switch to {PLATFORM_LABELS[fallbackAnalysisPlatform]} Analysis
+                                        </button>
+                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => setCompetitorPlatform(analysisPlatform)}
+                                        className="rounded-lg border border-[#d8c898] bg-white px-3 py-1.5 text-xs font-medium text-[#6a5b30] hover:bg-[#fffdf6]"
+                                    >
+                                        Add a {analysisPlatformLabel} Competitor
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {!loading && !hasAnyCompetitors && !error && (
                             <div className="rounded-3xl border border-[#dcdcdc] bg-white p-10 text-center shadow-[0_12px_30px_rgba(0,0,0,0.05)]">
                                 <h2 className="mb-2 text-xl font-bold text-[#1f1f1f]">No competitors added yet</h2>
                                 <p className="mx-auto max-w-lg text-sm text-[#6d6d6d]">
-                                    Add at least one channel to start recommendations and blueprint analysis.
+                                    {analysisPlatform === "youtube"
+                                        ? "Add at least one YouTube channel URL or @handle to start recommendations and blueprint analysis."
+                                        : `Add at least one ${analysisPlatformLabel} creator handle to start parity-safe recommendations and blueprint analysis.`}
                                 </p>
                             </div>
                         )}
@@ -1334,7 +1415,12 @@ export default function CompetitorsPage() {
 
                     <aside className="bg-[#f8f8f8] p-4 xl:border-l xl:border-[#dfdfdf]">
                         <div className="rounded-2xl border border-[#dcdcdc] bg-white p-4">
-                            <h2 className="mb-2 text-sm font-semibold text-[#222]">Suggested Competitors</h2>
+                            <div className="mb-2 flex items-center justify-between gap-2">
+                                <h2 className="text-sm font-semibold text-[#222]">Suggested Competitors</h2>
+                                <span className="rounded-full border border-[#d9d9d9] bg-[#f7f7f7] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#666]">
+                                    Secondary Workflow
+                                </span>
+                            </div>
                             <p className="mb-3 text-xs text-[#6d6d6d]">
                                 Enter a niche (for example, AI News) to discover high-performing competitors.
                             </p>
@@ -1485,8 +1571,7 @@ export default function CompetitorsPage() {
                             )}
                         </div>
                     </aside>
-                </div>
             </div>
-        </div>
+        </StudioAppShell>
     );
 }

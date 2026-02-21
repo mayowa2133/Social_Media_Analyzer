@@ -1109,6 +1109,15 @@ test("research -> variants -> rescore smoke flow", async ({ page }) => {
     await expect(page.getByText(/Combined: 81/)).toBeVisible();
     await expect(page.getByText(/Improve CTA Style/)).toBeVisible();
     await expect(page.getByText(/Line 2 \(CTA Style\)/)).toBeVisible();
+    await expect(page.getByRole("link", { name: /Run Audit From Script Studio/i })).toBeVisible();
+
+    await page.getByRole("button", { name: "Apply Top AI Edits" }).click();
+    await expect(page.getByPlaceholder("Edit your draft here, then re-score")).toHaveValue(/Comment "PLAN"/);
+
+    await page.getByRole("button", { name: "Reset to Selected Variant" }).click();
+    await expect(page.getByPlaceholder("Edit your draft here, then re-score")).toHaveValue(/Comment your niche for the template\./);
+    await page.getByRole("button", { name: "Re-score Edited Draft" }).click();
+    await expect(page.getByText(/Combined: 81/)).toBeVisible();
 
     await page.getByRole("button", { name: "Save Iteration" }).click();
     await expect(page.getByText("Iteration History")).toBeVisible();
@@ -1132,6 +1141,10 @@ test("instagram parity -> connect -> discover -> import -> download -> audit -> 
 
     await page.goto("/competitors");
     await page.locator("select").filter({ hasText: "YouTube Analysis" }).first().selectOption("instagram");
+    await page.getByRole("heading", { name: "Advanced Discovery Tools" })
+        .locator("..")
+        .getByRole("button", { name: "Show" })
+        .click();
     await page.getByPlaceholder("Find instagram creators by niche (optional)").fill("ai news");
     await page.getByRole("button", { name: "Discover Candidates" }).click();
     await expect(page.getByText("AI News Lab")).toBeVisible();

@@ -15,6 +15,7 @@ import models  # noqa: F401
 from routers import (
     health,
     auth,
+    ux,
     youtube,
     analysis,
     audit,
@@ -153,6 +154,7 @@ app.add_middleware(
 # Include routers
 app.include_router(health.router, tags=["Health"])
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
+app.include_router(ux.router, prefix="/ux", tags=["UX"])
 app.include_router(youtube.router, prefix="/youtube", tags=["YouTube"])
 app.include_router(analysis.router, prefix="/analysis", tags=["Analysis"])
 app.include_router(audit.router, prefix="/audit", tags=["Audit"])

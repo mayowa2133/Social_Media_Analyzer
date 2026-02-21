@@ -9,8 +9,11 @@ import {
     ingestOutcomeMetrics,
     recalibrateOutcomes,
 } from "@/lib/api";
+import { StudioAppShell } from "@/components/app-shell";
 import { ReportScorecard } from "@/components/ReportScorecard";
 import { BlueprintDisplay } from "@/components/blueprint-display";
+import { FlowStepper } from "@/components/flow-stepper";
+import { WorkflowAssistant } from "@/components/workflow-assistant";
 
 function postedAtFromWindow(windowKey: "now" | "7d" | "30d"): string {
     const now = new Date();
@@ -42,6 +45,7 @@ export default function ReportPage({ params }: { params: { id: string } }) {
         next_actions?: string[];
     } | null>(null);
     const [recalibrating, setRecalibrating] = useState(false);
+    const [showAdvancedCalibrationTools, setShowAdvancedCalibrationTools] = useState(false);
     const [outcomeForm, setOutcomeForm] = useState({
         platform: "youtube",
         views: "",
@@ -109,6 +113,11 @@ export default function ReportPage({ params }: { params: { id: string } }) {
     const prediction = report.performance_prediction;
     const reportPlatform = report.report_platform || "youtube";
     const hasPlatformMismatch = outcomeForm.platform !== reportPlatform;
+    const submitBlockedByMismatch = hasPlatformMismatch && !allowPlatformMismatch;
+    const refinementTopic = report.best_edited_variant?.script_preview?.slice(0, 100)
+        || report.diagnosis?.primary_issue
+        || "Improve performance";
+    const refinementHref = `/research?mode=optimizer&platform=${encodeURIComponent(reportPlatform)}&topic=${encodeURIComponent(refinementTopic)}&source_context=${encodeURIComponent("report_refinement")}${report.best_edited_variant?.source_item_id ? `&source_item_id=${encodeURIComponent(report.best_edited_variant.source_item_id)}` : ""}`;
     const hasCorePrediction = !!(
         prediction &&
         prediction.competitor_metrics &&
@@ -179,19 +188,16 @@ export default function ReportPage({ params }: { params: { id: string } }) {
     }
 
     return (
-        <div className="min-h-screen bg-[#e8e8e8] px-3 py-4 md:px-8 md:py-6">
-            <div className="mx-auto w-full max-w-[1500px] overflow-hidden rounded-[30px] border border-[#d8d8d8] bg-[#f5f5f5] shadow-[0_35px_90px_rgba(0,0,0,0.12)]">
-                <header className="no-print flex h-16 items-center justify-between border-b border-[#dfdfdf] bg-[#fafafa] px-4 md:px-6">
-                    <Link href="/" className="text-lg font-bold text-[#1f1f1f]">SPC Studio</Link>
-                    <nav className="flex gap-5 text-sm text-[#666]">
-                        <Link href="/dashboard" className="hover:text-[#1c1c1c]">Dashboard</Link>
-                        <Link href="/competitors" className="hover:text-[#1c1c1c]">Competitors</Link>
-                        <Link href="/research" className="hover:text-[#1c1c1c]">Research</Link>
-                        <Link href="/audit/new" className="hover:text-[#1c1c1c]">Audit Workspace</Link>
-                    </nav>
-                </header>
-
-                <main className="mx-auto max-w-5xl bg-[#f2f2f2] px-4 py-6 md:px-8">
+        <StudioAppShell
+            rightSlot={
+                <span className="rounded-full border border-[#d5d5d5] bg-white px-3 py-1 text-xs text-[#666]">
+                    Report View
+                </span>
+            }
+        >
+            <main className="mx-auto max-w-5xl bg-[#f2f2f2] px-4 py-6 md:px-8">
+                    <FlowStepper />
+                    <WorkflowAssistant context="report" />
                     <div className="mb-12">
                         <ReportScorecard
                             score={report.overall_score}
@@ -289,14 +295,28 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                                 </button>
                                 <button
                                     type="button"
+                                    onClick={() => setShowAdvancedCalibrationTools((prev) => !prev)}
+                                    className="rounded-lg border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-1 text-xs text-[#555] hover:bg-[#efefef]"
+                                >
+                                    {showAdvancedCalibrationTools ? "Hide Advanced" : "Advanced"}
+                                </button>
+                            </div>
+                        </div>
+                        {showAdvancedCalibrationTools && (
+                            <div className="mb-3 rounded-xl border border-[#e5e5e5] bg-[#fafafa] p-3">
+                                <p className="mb-2 text-[11px] uppercase tracking-wide text-[#777]">
+                                    Calibration Tools
+                                </p>
+                                <button
+                                    type="button"
                                     onClick={() => void handleRecalibrate()}
                                     disabled={recalibrating}
-                                    className="rounded-lg border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-1 text-xs text-[#555] hover:bg-[#efefef] disabled:opacity-50"
+                                    className="rounded-lg border border-[#d9d9d9] bg-white px-3 py-1 text-xs text-[#555] hover:bg-[#efefef] disabled:opacity-50"
                                 >
                                     {recalibrating ? "Recalibrating..." : "Run Recalibration"}
                                 </button>
                             </div>
-                        </div>
+                        )}
                         <div className="mb-3 rounded-xl border border-[#e5e5e5] bg-[#fafafa] p-3">
                             <p className="text-xs text-[#666]">
                                 Publish window:
@@ -362,15 +382,25 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                             <input type="datetime-local" value={outcomeForm.posted_at} onChange={(e) => setOutcomeForm((p) => ({ ...p, posted_at: e.target.value }))} className="rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222]" />
                             <button
                                 type="submit"
-                                disabled={postingOutcome || (hasPlatformMismatch && !allowPlatformMismatch)}
+                                disabled={postingOutcome || submitBlockedByMismatch}
                                 className="rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-xs text-[#2f2f2f] hover:bg-[#efefef] disabled:opacity-50"
                             >
-                                {postingOutcome ? "Saving..." : "Save Post Result"}
+                                {postingOutcome ? "Saving..." : submitBlockedByMismatch ? "Fix Platform to Save" : "Save Post Result"}
                             </button>
                         </form>
                         {hasPlatformMismatch && (
                             <div className="mt-2 rounded-xl border border-[#ecd9bc] bg-[#fff8ed] px-3 py-2 text-[11px] text-[#735534]">
                                 Platform mismatch detected (report: {reportPlatform}, selected: {outcomeForm.platform}).
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setOutcomeForm((prev) => ({ ...prev, platform: reportPlatform }));
+                                        setAllowPlatformMismatch(false);
+                                    }}
+                                    className="ml-2 rounded-md border border-[#d9c7ab] bg-white px-2 py-0.5 text-[11px] text-[#6f5131] hover:bg-[#f5ede1]"
+                                >
+                                    Use report platform
+                                </button>
                                 <button
                                     type="button"
                                     onClick={() => setAllowPlatformMismatch(true)}
@@ -433,10 +463,25 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                                 </div>
                             )}
                             <Link
-                                href={`/research?mode=optimizer&source_item_id=${encodeURIComponent(report.best_edited_variant.source_item_id || "")}&topic=${encodeURIComponent(report.best_edited_variant.script_preview.slice(0, 100))}&source_context=${encodeURIComponent("report_refinement")}`}
+                                href={refinementHref}
                                 className="mt-3 inline-flex rounded-lg border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-xs text-[#2f2f2f] hover:bg-[#efefef]"
                             >
                                 Generate Improved A/B/C From This Draft
+                            </Link>
+                        </section>
+                    )}
+
+                    {!report.best_edited_variant && (
+                        <section className="mb-10 rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                            <h2 className="text-lg font-bold text-[#1f1f1f]">Refine in Script Studio</h2>
+                            <p className="mt-2 text-xs text-[#666]">
+                                Generate improved A/B/C variants from this report context and platform.
+                            </p>
+                            <Link
+                                href={refinementHref}
+                                className="mt-3 inline-flex rounded-lg border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-xs text-[#2f2f2f] hover:bg-[#efefef]"
+                            >
+                                Generate Improved A/B/C Variants
                             </Link>
                         </section>
                     )}
@@ -703,8 +748,7 @@ export default function ReportPage({ params }: { params: { id: string } }) {
                             </div>
                         </section>
                     )}
-                </main>
-            </div>
-        </div>
+            </main>
+        </StudioAppShell>
     );
 }

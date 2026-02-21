@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
     captureResearchItem,
     createResearchCollection,
@@ -12,6 +12,7 @@ import {
     getApiBaseUrl,
     getCreditSummary,
     getCurrentUserId,
+    FlowStateResponse,
     getOutcomesSummary,
     getResearchItem,
     ingestOutcomeMetrics,
@@ -30,6 +31,9 @@ import {
     updateResearchItemMeta,
 } from "@/lib/api";
 import { useSession } from "next-auth/react";
+import { StudioAppShell } from "@/components/app-shell";
+import { FlowStepper } from "@/components/flow-stepper";
+import { WorkflowAssistant } from "@/components/workflow-assistant";
 
 type ResearchTab = "discover" | "collections" | "compare";
 
@@ -46,6 +50,24 @@ function platformLabel(value: string) {
     if (value === "tiktok") return "TikTok";
     return value;
 }
+
+const SCRIPT_TOPIC_PRESETS: Record<"youtube" | "instagram" | "tiktok", string[]> = {
+    youtube: [
+        "3 hook mistakes killing your Shorts retention",
+        "How to turn one long video into 5 viral Shorts",
+        "Why your YouTube CTR drops after 48 hours",
+    ],
+    instagram: [
+        "Reels hook formula that doubles saves",
+        "How to structure story-driven educational Reels",
+        "3 editing patterns that improve Reel completion",
+    ],
+    tiktok: [
+        "TikTok opener styles that stop fast swipes",
+        "How to make repeatable TikTok series content",
+        "3 caption frameworks that boost share rate",
+    ],
+};
 
 function postedAtFromWindow(windowKey: "now" | "7d" | "30d"): string {
     const now = new Date();
@@ -164,6 +186,7 @@ export default function ResearchPage() {
     } | null>(null);
     const [postingOutcome, setPostingOutcome] = useState(false);
     const [outcomeMessage, setOutcomeMessage] = useState<string | null>(null);
+    const [appliedFlowDefaults, setAppliedFlowDefaults] = useState(false);
 
     const selectedItems = useMemo(() => {
         const selectedSet = new Set(selectedIds);
@@ -188,6 +211,31 @@ export default function ResearchPage() {
         }
         return mapping;
     }, [platformOutcomeSummary?.recent_outcomes]);
+    const scriptTopicPresets = SCRIPT_TOPIC_PRESETS[scriptPlatform];
+    const canGenerateVariants = scriptTopic.trim().length > 0 && !generatingVariants;
+    const selectedVariant = useMemo(
+        () => variants.find((variant) => variant.id === selectedVariantId) || null,
+        [selectedVariantId, variants]
+    );
+
+    const applyFlowDefaults = useCallback((state: FlowStateResponse) => {
+        if (appliedFlowDefaults) {
+            return;
+        }
+        const preferred = state.preferred_platform;
+        if (!preferred || preferred === "youtube") {
+            setAppliedFlowDefaults(true);
+            return;
+        }
+        if (selectedSourceItemId || sourceContextNote || scriptTopic.trim()) {
+            setAppliedFlowDefaults(true);
+            return;
+        }
+        setScriptPlatform((prev) => (prev === "youtube" ? preferred : prev));
+        setImportPlatform((prev) => (prev === "youtube" ? preferred : prev));
+        setSearchPlatform((prev) => (prev === "" ? preferred : prev));
+        setAppliedFlowDefaults(true);
+    }, [appliedFlowDefaults, scriptTopic, selectedSourceItemId, sourceContextNote]);
 
     async function resolveUserId() {
         const stored = getCurrentUserId();
@@ -207,7 +255,7 @@ export default function ResearchPage() {
             return synced.user_id;
         }
 
-        throw new Error("Connect YouTube first so the backend can scope research to your account.");
+        throw new Error("Connect at least one platform first so research can be scoped to your account.");
     }
 
     async function refreshCredits() {
@@ -302,6 +350,7 @@ export default function ResearchPage() {
         const params = new URLSearchParams(window.location.search);
         const mode = params.get("mode");
         const topic = params.get("topic");
+        const platform = params.get("platform");
         const sourceItemId = params.get("source_item_id");
         const sourceContext = params.get("source_context");
 
@@ -310,6 +359,11 @@ export default function ResearchPage() {
         }
         if (topic) {
             setScriptTopic(topic);
+        }
+        if (platform === "youtube" || platform === "instagram" || platform === "tiktok") {
+            setScriptPlatform(platform);
+            setImportPlatform(platform);
+            setSearchPlatform(platform);
         }
         if (sourceContext) {
             setSourceContextNote(sourceContext);
@@ -334,7 +388,7 @@ export default function ResearchPage() {
                 await resolveUserId();
                 await Promise.all([runSearch(1), refreshCollections(), refreshCredits(), refreshDraftHistory(), refreshOutcomeSummary()]);
             } catch (err: any) {
-                setSearchError(err.message || "Please connect YouTube first.");
+                setSearchError(err.message || "Please connect a platform first.");
             }
         })();
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -594,6 +648,36 @@ export default function ResearchPage() {
         }
     }
 
+    function applyTopLineEdits() {
+        if (!rescoreResult?.line_level_edits?.length || !draftText.trim()) {
+            return;
+        }
+        const nextLines = draftText.split("\n");
+        const topEdits = [...rescoreResult.line_level_edits]
+            .sort((a, b) => (a.line_number || 0) - (b.line_number || 0))
+            .slice(0, 3);
+        for (const edit of topEdits) {
+            const lineIndex = Math.max(0, Number(edit.line_number || 1) - 1);
+            while (nextLines.length <= lineIndex) {
+                nextLines.push("");
+            }
+            nextLines[lineIndex] = edit.suggested_line;
+        }
+        setDraftText(nextLines.join("\n").trim());
+        setRescoreError(null);
+    }
+
+    function resetDraftToSelectedVariant() {
+        if (!selectedVariant) {
+            return;
+        }
+        setDraftText(selectedVariant.script_text || selectedVariant.script);
+        setBaselineScore(selectedVariant.score_breakdown.combined);
+        setBaselineDetectorRankings(selectedVariant.detector_rankings || []);
+        setRescoreResult(null);
+        setRescoreError(null);
+    }
+
     async function handleSaveIteration() {
         if (!draftText.trim()) {
             setSaveIterationError("Draft cannot be empty.");
@@ -705,24 +789,14 @@ export default function ResearchPage() {
     }
 
     return (
-        <div className="min-h-screen bg-[#e8e8e8] px-3 py-4 md:px-8 md:py-6">
-            <div className="mx-auto w-full max-w-[1500px] overflow-hidden rounded-[30px] border border-[#d8d8d8] bg-[#f5f5f5] shadow-[0_35px_90px_rgba(0,0,0,0.12)]">
-                <header className="flex h-16 items-center justify-between border-b border-[#dfdfdf] bg-[#fafafa] px-4 md:px-6">
-                    <div className="flex items-center gap-4">
-                        <Link href="/" className="text-lg font-bold text-[#1f1f1f]">SPC Studio</Link>
-                        <nav className="hidden items-center gap-4 text-sm text-[#6b6b6b] md:flex">
-                            <Link href="/dashboard" className="hover:text-[#151515]">Dashboard</Link>
-                            <Link href="/competitors" className="hover:text-[#151515]">Competitors</Link>
-                            <Link href="/research" className="font-medium text-[#1b1b1b]">Research</Link>
-                            <Link href="/audit/new" className="hover:text-[#151515]">Audit Workspace</Link>
-                        </nav>
-                    </div>
-                    <div className="rounded-full border border-[#d5d5d5] bg-white px-3 py-1 text-xs text-[#666]">
-                        Credits: {creditsBalance}
-                    </div>
-                </header>
-
-                <div className="grid min-h-[calc(100vh-8.5rem)] grid-cols-1 xl:grid-cols-[300px_minmax(0,1fr)_360px]">
+        <StudioAppShell
+            rightSlot={
+                <div className="rounded-full border border-[#d5d5d5] bg-white px-3 py-1 text-xs text-[#666]">
+                    Credits: {creditsBalance}
+                </div>
+            }
+        >
+            <div className="grid min-h-[calc(100vh-8.5rem)] grid-cols-1 xl:grid-cols-[300px_minmax(0,1fr)_360px]">
                     <aside className="border-b border-[#dfdfdf] bg-[#f8f8f8] p-4 xl:border-b-0 xl:border-r">
                         <div className="rounded-2xl border border-[#dcdcdc] bg-white p-4">
                             <h2 className="mb-2 text-sm font-semibold text-[#222]">Import Research</h2>
@@ -913,6 +987,8 @@ export default function ResearchPage() {
                     </aside>
 
                     <section className="border-b border-[#dfdfdf] bg-[#f2f2f2] px-4 py-4 md:px-6 xl:border-b-0">
+                        <FlowStepper />
+                        <WorkflowAssistant context="research" onFlowState={applyFlowDefaults} />
                         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
                             <h1 className="text-2xl font-bold text-[#1f1f1f] md:text-3xl">Research Studio</h1>
                             <div className="grid grid-cols-3 gap-2 rounded-xl border border-[#d9d9d9] bg-[#efefef] p-1">
@@ -1150,11 +1226,26 @@ export default function ResearchPage() {
                         <div className="rounded-2xl border border-[#dcdcdc] bg-white p-4">
                             <h2 className="mb-2 text-sm font-semibold text-[#222]">Script Optimizer</h2>
                             <p className="mb-3 text-xs text-[#6d6d6d]">Research to Generate 3 variants to Edit and Re-score</p>
+                            <p className="mb-3 text-[11px] text-[#787878]">
+                                Quick start: choose platform, set a topic, generate A/B/C variants, then edit and re-score.
+                            </p>
                             {(selectedSourceItemId || sourceContextNote) && (
                                 <p className="mb-3 text-[11px] text-[#6d6d6d]">
                                     Source context: {sourceContextNote || selectedSourceItemId}
                                 </p>
                             )}
+                            <div className="mb-3 flex flex-wrap gap-2">
+                                {scriptTopicPresets.map((preset) => (
+                                    <button
+                                        key={preset}
+                                        type="button"
+                                        onClick={() => setScriptTopic(preset)}
+                                        className="rounded-lg border border-[#d9d9d9] bg-[#f8f8f8] px-2 py-1 text-[11px] text-[#555] hover:bg-[#efefef]"
+                                    >
+                                        {preset}
+                                    </button>
+                                ))}
+                            </div>
 
                             <form onSubmit={handleGenerateVariants} className="space-y-2">
                                 <input
@@ -1234,11 +1325,16 @@ export default function ResearchPage() {
                                 </div>
                                 <button
                                     type="submit"
-                                    disabled={generatingVariants}
+                                    disabled={!canGenerateVariants}
                                     className="w-full rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-sm text-[#2f2f2f] hover:bg-[#efefef] disabled:opacity-50"
                                 >
                                     {generatingVariants ? "Generating..." : "Generate 3 Variants"}
                                 </button>
+                                {!scriptTopic.trim() && (
+                                    <p className="text-[11px] text-[#7a7a7a]">
+                                        Add a topic to enable variant generation.
+                                    </p>
+                                )}
                             </form>
 
                             {variantError && (
@@ -1304,6 +1400,24 @@ export default function ResearchPage() {
                                 >
                                     {rescoring ? "Rescoring..." : "Re-score Edited Draft"}
                                 </button>
+                                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                    <button
+                                        type="button"
+                                        onClick={applyTopLineEdits}
+                                        disabled={!rescoreResult?.line_level_edits?.length}
+                                        className="rounded-xl border border-[#d9d9d9] bg-white px-3 py-2 text-xs text-[#2f2f2f] hover:bg-[#f4f4f4] disabled:opacity-50"
+                                    >
+                                        Apply Top AI Edits
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={resetDraftToSelectedVariant}
+                                        disabled={!selectedVariant}
+                                        className="rounded-xl border border-[#d9d9d9] bg-white px-3 py-2 text-xs text-[#2f2f2f] hover:bg-[#f4f4f4] disabled:opacity-50"
+                                    >
+                                        Reset to Selected Variant
+                                    </button>
+                                </div>
                                 <button
                                     type="button"
                                     onClick={() => void handleSaveIteration()}
@@ -1353,6 +1467,20 @@ export default function ResearchPage() {
                                             ))}
                                         </ul>
                                     )}
+                                    <div className="mt-3 flex flex-wrap gap-2">
+                                        <Link
+                                            href={`/audit/new?platform=${encodeURIComponent(scriptPlatform)}&source_mode=url${selectedSourceItemId ? `&source_item_id=${encodeURIComponent(selectedSourceItemId)}` : ""}&source_context=${encodeURIComponent("script_studio")}`}
+                                            className="inline-flex rounded-lg border border-[#d9d9d9] bg-white px-2 py-1 text-[11px] text-[#555] hover:bg-[#efefef]"
+                                        >
+                                            Run Audit From Script Studio
+                                        </Link>
+                                        <Link
+                                            href="/report/latest"
+                                            className="inline-flex rounded-lg border border-[#d9d9d9] bg-white px-2 py-1 text-[11px] text-[#555] hover:bg-[#efefef]"
+                                        >
+                                            Open Latest Report
+                                        </Link>
+                                    </div>
                                 </div>
                             )}
 
@@ -1568,8 +1696,7 @@ export default function ResearchPage() {
                             </form>
                         </div>
                     </aside>
-                </div>
             </div>
-        </div>
+        </StudioAppShell>
     );
 }

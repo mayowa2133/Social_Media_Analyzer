@@ -19,7 +19,7 @@ function safeEncode(value: string): string {
 function resolveUserId(userId?: string): string {
     const resolved = userId || getCurrentUserId();
     if (!resolved) {
-        throw new Error("No authenticated user found. Connect YouTube to continue.");
+        throw new Error("No authenticated user found. Connect at least one platform to continue.");
     }
     return resolved;
 }
@@ -222,6 +222,29 @@ export interface ConnectPlatformCallbackRequest {
     redirect_uri?: string;
 }
 
+export interface FlowStateResponse {
+    connected_platforms: Record<string, boolean>;
+    has_competitors_by_platform: Record<string, boolean>;
+    has_research_items_by_platform: Record<string, boolean>;
+    has_script_variants: boolean;
+    has_completed_audit: boolean;
+    has_report: boolean;
+    has_outcomes: boolean;
+    next_best_action:
+        | "connect_platform"
+        | "add_competitors"
+        | "import_research"
+        | "generate_script"
+        | "run_audit"
+        | "post_outcome"
+        | "optimize_loop";
+    next_best_href: string;
+    completion_percent: number;
+    stage_completion: Record<string, boolean>;
+    totals: Record<string, number>;
+    preferred_platform?: "youtube" | "instagram" | "tiktok" | null;
+}
+
 export async function syncYouTubeSession(payload: SyncYouTubeSessionRequest): Promise<SyncYouTubeSessionResponse> {
     const result = await fetchApi<SyncYouTubeSessionResponse>("/auth/sync/youtube", {
         method: "POST",
@@ -265,6 +288,10 @@ export async function connectSocialPlatformCallback(
     setCurrentUserId(result.user_id);
     setBackendSessionToken(result.session_token);
     return result;
+}
+
+export async function getFlowState(): Promise<FlowStateResponse> {
+    return fetchApi<FlowStateResponse>("/ux/flow_state");
 }
 
 export async function logoutBackendSession(): Promise<void> {

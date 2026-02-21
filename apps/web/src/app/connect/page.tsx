@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { signIn, useSession } from "next-auth/react";
-import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
     clearStoredAuthSession,
@@ -13,12 +12,14 @@ import {
     ingestPlatformMetricsCsv,
     syncSocialConnection,
 } from "@/lib/api";
+import { StudioAppShell } from "@/components/app-shell";
+import { FlowStepper } from "@/components/flow-stepper";
 
 export default function ConnectPage() {
     const { data: session, status } = useSession();
-    const router = useRouter();
     const [authError, setAuthError] = useState<string | null>(null);
     const [profile, setProfile] = useState<CurrentUserResponse | null>(null);
+    const [activeConnectPlatform, setActiveConnectPlatform] = useState<"youtube" | "instagram" | "tiktok">("instagram");
     const [socialPlatform, setSocialPlatform] = useState<"instagram" | "tiktok">("instagram");
     const [socialEmail, setSocialEmail] = useState("");
     const [socialHandle, setSocialHandle] = useState("");
@@ -64,12 +65,15 @@ export default function ConnectPage() {
               ? "Could not complete Google sign-in. Please try again."
               : null;
 
-    // Redirect if already connected
     useEffect(() => {
-        if (session?.accessToken) {
-            router.push("/dashboard");
+        if (activeConnectPlatform === "instagram" || activeConnectPlatform === "tiktok") {
+            setSocialPlatform(activeConnectPlatform);
+            setMetricsPlatform(activeConnectPlatform);
         }
-    }, [session, router]);
+        if (activeConnectPlatform === "youtube") {
+            setMetricsPlatform("youtube");
+        }
+    }, [activeConnectPlatform]);
 
     const handleConnectYouTube = () => {
         signIn("google", { callbackUrl: "/dashboard" });
@@ -156,30 +160,19 @@ export default function ConnectPage() {
         }
     }
 
-    return (
-        <div className="min-h-screen bg-[#e8e8e8] px-3 py-4 md:px-8 md:py-6">
-            <div className="mx-auto w-full max-w-[1500px] overflow-hidden rounded-[30px] border border-[#d8d8d8] bg-[#f5f5f5] shadow-[0_35px_90px_rgba(0,0,0,0.12)]">
-                <header className="flex h-16 items-center justify-between border-b border-[#dfdfdf] bg-[#fafafa] px-4 md:px-6">
-                    <div className="flex items-center gap-4">
-                        <Link href="/" className="text-lg font-bold text-[#1f1f1f]">
-                            SPC Studio
-                        </Link>
-                        <nav className="hidden items-center gap-4 text-sm text-[#6b6b6b] md:flex">
-                            <Link href="/dashboard" className="hover:text-[#151515]">Dashboard</Link>
-                            <Link href="/competitors" className="hover:text-[#151515]">Competitors</Link>
-                            <Link href="/research" className="hover:text-[#151515]">Research</Link>
-                            <Link href="/audit/new" className="hover:text-[#151515]">Audit Workspace</Link>
-                            <Link href="/connect" className="font-medium text-[#1b1b1b]">Connect</Link>
-                        </nav>
-                    </div>
-                    <div className="flex items-center gap-3">
-                        <span className="hidden rounded-full border border-[#d5d5d5] bg-white px-3 py-1 text-xs text-[#666] md:inline-flex">
-                            Multi-Platform Connect
-                        </span>
-                    </div>
-                </header>
+    const connectedPlatforms = profile?.connected_platforms || { youtube: false, instagram: false, tiktok: false };
+    const connectedCount = Object.values(connectedPlatforms).filter(Boolean).length;
+    const hasConnectedSession = Boolean(session?.accessToken) || connectedCount > 0;
 
-                <div className="grid min-h-[calc(100vh-8.5rem)] grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)_320px]">
+    return (
+        <StudioAppShell
+            rightSlot={
+                <span className="hidden rounded-full border border-[#d5d5d5] bg-white px-3 py-1 text-xs text-[#666] md:inline-flex">
+                    Multi-Platform Connect
+                </span>
+            }
+        >
+            <div className="grid min-h-[calc(100vh-8.5rem)] grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)_320px]">
                     <aside className="border-b border-[#dfdfdf] bg-[#f8f8f8] p-4 xl:border-b-0 xl:border-r">
                         <h2 className="mb-1 text-sm font-semibold text-[#222]">Connection Checklist</h2>
                         <p className="mb-4 text-xs text-[#777]">
@@ -217,10 +210,37 @@ export default function ConnectPage() {
 
                     <section className="border-b border-[#dfdfdf] bg-[#f2f2f2] px-4 py-4 md:px-6 xl:border-b-0">
                         <div className="mx-auto flex max-w-4xl flex-col gap-5">
+                            <FlowStepper />
+
+                            {hasConnectedSession && (
+                                <div className="rounded-2xl border border-[#cfe6cf] bg-[#edf7ed] p-4">
+                                    <p className="text-sm font-semibold text-[#2e5a33]">
+                                        You are already authenticated.
+                                    </p>
+                                    <p className="mt-1 text-xs text-[#3d6744]">
+                                        Continue to your dashboard or stay here to connect additional platforms.
+                                    </p>
+                                    <div className="mt-2 flex flex-wrap gap-2">
+                                        <Link
+                                            href="/dashboard"
+                                            className="rounded-lg border border-[#b9d8b9] bg-white px-3 py-1.5 text-xs font-medium text-[#2f5a33] hover:bg-[#f7fff7]"
+                                        >
+                                            Continue to Dashboard
+                                        </Link>
+                                        <Link
+                                            href="/competitors"
+                                            className="rounded-lg border border-[#b9d8b9] bg-white px-3 py-1.5 text-xs font-medium text-[#2f5a33] hover:bg-[#f7fff7]"
+                                        >
+                                            Continue to Competitors
+                                        </Link>
+                                    </div>
+                                </div>
+                            )}
+
                             <div className="rounded-[28px] border border-[#dcdcdc] bg-white p-6 shadow-[0_14px_40px_rgba(0,0,0,0.06)] md:p-8">
                                 <h1 className="text-2xl font-bold text-[#1f1f1f] md:text-3xl">Connect Your Channels</h1>
                                 <p className="mt-2 text-sm text-[#666]">
-                                    YouTube uses Google OAuth. Instagram and TikTok use manual account connection and analytics import for parity.
+                                    Four-step setup: choose platform, connect account, import analytics, continue workflow.
                                 </p>
 
                                 {status === "loading" ? (
@@ -230,106 +250,174 @@ export default function ConnectPage() {
                                     </div>
                                 ) : (
                                     <div className="mt-6 space-y-4">
-                                        <div className="flex items-center justify-between gap-4 rounded-2xl border border-[#dcdcdc] bg-[#fafafa] p-4">
-                                            <div className="flex items-center gap-4">
-                                                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#d93b3b] text-white">
-                                                    <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
-                                                        <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
-                                                    </svg>
-                                                </div>
-                                                <div>
-                                                    <h2 className="text-sm font-semibold text-[#222]">YouTube</h2>
-                                                    <p className="text-xs text-[#666]">Connect via Google OAuth</p>
-                                                </div>
+                                        <div className="rounded-2xl border border-[#dcdcdc] bg-[#fafafa] p-4">
+                                            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[#666]">Step 1</p>
+                                            <h2 className="text-sm font-semibold text-[#222]">Choose Platform</h2>
+                                            <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                                                {(["youtube", "instagram", "tiktok"] as const).map((platform) => (
+                                                    <button
+                                                        key={platform}
+                                                        type="button"
+                                                        onClick={() => setActiveConnectPlatform(platform)}
+                                                        className={`rounded-xl border px-3 py-2 text-xs font-medium ${
+                                                            activeConnectPlatform === platform
+                                                                ? "border-[#b9b9b9] bg-white text-[#1f1f1f]"
+                                                                : "border-[#d9d9d9] bg-[#f5f5f5] text-[#555] hover:bg-[#efefef]"
+                                                        }`}
+                                                    >
+                                                        {platform === "youtube" ? "YouTube" : platform === "instagram" ? "Instagram" : "TikTok"}
+                                                    </button>
+                                                ))}
                                             </div>
-                                            <button
-                                                onClick={handleConnectYouTube}
-                                                className="rounded-xl bg-[#1f1f1f] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#111]"
-                                            >
-                                                Connect
-                                            </button>
                                         </div>
 
-                                        <form
-                                            onSubmit={handleConnectSocial}
-                                            className="rounded-2xl border border-[#dcdcdc] bg-[#fafafa] p-4"
-                                        >
-                                            <div className="mb-2 flex items-center justify-between gap-2">
-                                                <h2 className="text-sm font-semibold text-[#222]">Instagram / TikTok</h2>
-                                                <span className="rounded-lg border border-[#dbdbdb] bg-white px-2 py-1 text-[11px] text-[#6f6f6f]">
-                                                    Hybrid Safe Connect
-                                                </span>
-                                            </div>
-                                            <div className="mb-3 rounded-xl border border-[#e3e3e3] bg-white p-3">
-                                                <p className="text-[11px] text-[#666]">
-                                                    OAuth availability: Instagram {profile?.connector_capabilities?.instagram_oauth_available ? "enabled" : "disabled"} · TikTok {profile?.connector_capabilities?.tiktok_oauth_available ? "enabled" : "disabled"}
-                                                </p>
-                                                <div className="mt-2 flex flex-wrap gap-2">
+                                        <div className="rounded-2xl border border-[#dcdcdc] bg-[#fafafa] p-4">
+                                            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[#666]">Step 2</p>
+                                            <h2 className="text-sm font-semibold text-[#222]">
+                                                {activeConnectPlatform === "youtube" ? "Connect YouTube" : `Connect ${activeConnectPlatform === "instagram" ? "Instagram" : "TikTok"}`}
+                                            </h2>
+
+                                            {activeConnectPlatform === "youtube" ? (
+                                                <div className="mt-3 flex items-center justify-between gap-4 rounded-xl border border-[#e3e3e3] bg-white p-4">
+                                                    <div>
+                                                        <p className="text-sm font-semibold text-[#222]">YouTube OAuth</p>
+                                                        <p className="text-xs text-[#666]">Connect via Google sign-in.</p>
+                                                    </div>
                                                     <button
-                                                        type="button"
-                                                        onClick={() => void handleConnectSocialOAuth("instagram")}
-                                                        disabled={!profile?.connector_capabilities?.instagram_oauth_available || connectingSocialOauth !== null}
-                                                        className="rounded-lg border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-1.5 text-xs text-[#444] hover:bg-[#efefef] disabled:opacity-50"
+                                                        onClick={handleConnectYouTube}
+                                                        className="rounded-xl bg-[#1f1f1f] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#111]"
                                                     >
-                                                        {connectingSocialOauth === "instagram" ? "Connecting..." : "Connect Instagram OAuth"}
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => void handleConnectSocialOAuth("tiktok")}
-                                                        disabled={!profile?.connector_capabilities?.tiktok_oauth_available || connectingSocialOauth !== null}
-                                                        className="rounded-lg border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-1.5 text-xs text-[#444] hover:bg-[#efefef] disabled:opacity-50"
-                                                    >
-                                                        {connectingSocialOauth === "tiktok" ? "Connecting..." : "Connect TikTok OAuth"}
+                                                        Connect
                                                     </button>
                                                 </div>
-                                                <p className="mt-2 text-[11px] text-[#777]">If OAuth is disabled, manual sync below remains fully supported.</p>
-                                            </div>
-                                            <div className="grid gap-2 md:grid-cols-2">
-                                                <select
-                                                    value={socialPlatform}
-                                                    onChange={(e) => setSocialPlatform(e.target.value as "instagram" | "tiktok")}
-                                                    className="rounded-xl border border-[#d8d8d8] bg-white px-2 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                            ) : (
+                                                <form
+                                                    onSubmit={handleConnectSocial}
+                                                    className="mt-3 rounded-xl border border-[#e3e3e3] bg-white p-3"
                                                 >
-                                                    <option value="instagram">Instagram</option>
-                                                    <option value="tiktok">TikTok</option>
+                                                    <div className="mb-3 rounded-xl border border-[#e7e7e7] bg-[#fafafa] p-3">
+                                                        <p className="text-[11px] text-[#666]">
+                                                            OAuth availability: Instagram {profile?.connector_capabilities?.instagram_oauth_available ? "enabled" : "disabled"} · TikTok {profile?.connector_capabilities?.tiktok_oauth_available ? "enabled" : "disabled"}
+                                                        </p>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => void handleConnectSocialOAuth(activeConnectPlatform as "instagram" | "tiktok")}
+                                                            disabled={
+                                                                connectingSocialOauth !== null ||
+                                                                (activeConnectPlatform === "instagram"
+                                                                    ? !profile?.connector_capabilities?.instagram_oauth_available
+                                                                    : !profile?.connector_capabilities?.tiktok_oauth_available)
+                                                            }
+                                                            className="mt-2 rounded-lg border border-[#d9d9d9] bg-white px-3 py-1.5 text-xs text-[#444] hover:bg-[#efefef] disabled:opacity-50"
+                                                        >
+                                                            {connectingSocialOauth === activeConnectPlatform
+                                                                ? "Connecting..."
+                                                                : `Connect ${activeConnectPlatform === "instagram" ? "Instagram" : "TikTok"} OAuth`}
+                                                        </button>
+                                                        <p className="mt-2 text-[11px] text-[#777]">
+                                                            If OAuth is disabled, manual sync below remains fully supported.
+                                                        </p>
+                                                    </div>
+                                                    <div className="grid gap-2 md:grid-cols-2">
+                                                        <input
+                                                            type="email"
+                                                            value={socialEmail}
+                                                            onChange={(e) => setSocialEmail(e.target.value)}
+                                                            placeholder="Email"
+                                                            className="rounded-xl border border-[#d8d8d8] bg-white px-3 py-2 text-xs text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                                        />
+                                                        <input
+                                                            value={socialHandle}
+                                                            onChange={(e) => setSocialHandle(e.target.value)}
+                                                            placeholder="@handle"
+                                                            className="rounded-xl border border-[#d8d8d8] bg-white px-3 py-2 text-xs text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                                        />
+                                                        <input
+                                                            value={socialDisplayName}
+                                                            onChange={(e) => setSocialDisplayName(e.target.value)}
+                                                            placeholder="Display name (optional)"
+                                                            className="rounded-xl border border-[#d8d8d8] bg-white px-3 py-2 text-xs text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                                        />
+                                                        <input
+                                                            value={socialFollowers}
+                                                            onChange={(e) => setSocialFollowers(e.target.value)}
+                                                            placeholder="Follower count (optional)"
+                                                            className="rounded-xl border border-[#d8d8d8] bg-white px-3 py-2 text-xs text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                                        />
+                                                    </div>
+                                                    <button
+                                                        type="submit"
+                                                        disabled={connectingSocial || !socialEmail.trim() || !socialHandle.trim()}
+                                                        className="mt-3 rounded-xl bg-[#1f1f1f] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#111] disabled:opacity-50"
+                                                    >
+                                                        {connectingSocial ? "Connecting..." : "Connect Account"}
+                                                    </button>
+                                                    {socialMessage && (
+                                                        <p className="mt-2 text-xs text-[#5a5a5a]">{socialMessage}</p>
+                                                    )}
+                                                </form>
+                                            )}
+                                        </div>
+
+                                        <div className="rounded-2xl border border-[#dcdcdc] bg-[#fafafa] p-4">
+                                            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[#666]">Step 3</p>
+                                            <h2 className="text-sm font-semibold text-[#222]">Import Owned Analytics (Optional)</h2>
+                                            <p className="mt-1 text-xs text-[#666]">
+                                                Upload exported CSV analytics to ingest true views/likes/comments/shares/saves/retention.
+                                            </p>
+                                            <form onSubmit={handleImportMetricsCsv} className="mt-3 space-y-2">
+                                                <select
+                                                    value={metricsPlatform}
+                                                    onChange={(e) => setMetricsPlatform(e.target.value as "youtube" | "instagram" | "tiktok")}
+                                                    className="w-full rounded-xl border border-[#d8d8d8] bg-white px-2 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                                                >
+                                                    <option value="youtube">YouTube CSV</option>
+                                                    <option value="instagram">Instagram CSV</option>
+                                                    <option value="tiktok">TikTok CSV</option>
                                                 </select>
                                                 <input
-                                                    type="email"
-                                                    value={socialEmail}
-                                                    onChange={(e) => setSocialEmail(e.target.value)}
-                                                    placeholder="Email"
-                                                    className="rounded-xl border border-[#d8d8d8] bg-white px-3 py-2 text-xs text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
+                                                    type="file"
+                                                    accept=".csv,text/csv"
+                                                    onChange={(e) => setMetricsCsvFile(e.target.files?.[0] || null)}
+                                                    className="w-full rounded-xl border border-[#d8d8d8] bg-white px-2 py-2 text-xs text-[#222]"
                                                 />
-                                                <input
-                                                    value={socialHandle}
-                                                    onChange={(e) => setSocialHandle(e.target.value)}
-                                                    placeholder="@handle"
-                                                    className="rounded-xl border border-[#d8d8d8] bg-white px-3 py-2 text-xs text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
-                                                />
-                                                <input
-                                                    value={socialDisplayName}
-                                                    onChange={(e) => setSocialDisplayName(e.target.value)}
-                                                    placeholder="Display name (optional)"
-                                                    className="rounded-xl border border-[#d8d8d8] bg-white px-3 py-2 text-xs text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none"
-                                                />
-                                                <input
-                                                    value={socialFollowers}
-                                                    onChange={(e) => setSocialFollowers(e.target.value)}
-                                                    placeholder="Follower count (optional)"
-                                                    className="rounded-xl border border-[#d8d8d8] bg-white px-3 py-2 text-xs text-[#222] placeholder:text-[#9a9a9a] focus:border-[#b8b8b8] focus:outline-none md:col-span-2"
-                                                />
-                                            </div>
-                                            <button
-                                                type="submit"
-                                                disabled={connectingSocial || !socialEmail.trim() || !socialHandle.trim()}
-                                                className="mt-3 rounded-xl bg-[#1f1f1f] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#111] disabled:opacity-50"
-                                            >
-                                                {connectingSocial ? "Connecting..." : "Connect Account"}
-                                            </button>
-                                            {socialMessage && (
-                                                <p className="mt-2 text-xs text-[#5a5a5a]">{socialMessage}</p>
+                                                <button
+                                                    type="submit"
+                                                    disabled={importingMetrics || !metricsCsvFile}
+                                                    className="inline-flex rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-sm font-medium text-[#2f2f2f] hover:bg-[#efefef] disabled:opacity-50"
+                                                >
+                                                    {importingMetrics ? "Importing..." : "Import CSV Metrics"}
+                                                </button>
+                                            </form>
+                                            {metricsMessage && (
+                                                <p className="mt-2 text-xs text-[#5a5a5a]">{metricsMessage}</p>
                                             )}
-                                        </form>
+                                        </div>
+
+                                        <div className="rounded-2xl border border-[#dcdcdc] bg-[#fafafa] p-4">
+                                            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[#666]">Step 4</p>
+                                            <h2 className="text-sm font-semibold text-[#222]">Continue Workflow</h2>
+                                            <div className="mt-3 flex flex-wrap gap-2">
+                                                <Link
+                                                    href="/dashboard"
+                                                    className="rounded-lg border border-[#d9d9d9] bg-white px-3 py-1.5 text-xs text-[#555] hover:bg-[#efefef]"
+                                                >
+                                                    Go to Dashboard
+                                                </Link>
+                                                <Link
+                                                    href="/competitors"
+                                                    className="rounded-lg border border-[#d9d9d9] bg-white px-3 py-1.5 text-xs text-[#555] hover:bg-[#efefef]"
+                                                >
+                                                    Add Competitors
+                                                </Link>
+                                                <Link
+                                                    href="/research"
+                                                    className="rounded-lg border border-[#d9d9d9] bg-white px-3 py-1.5 text-xs text-[#555] hover:bg-[#efefef]"
+                                                >
+                                                    Open Research
+                                                </Link>
+                                            </div>
+                                        </div>
                                     </div>
                                 )}
                             </div>
@@ -347,47 +435,29 @@ export default function ConnectPage() {
                         </div>
 
                         <div className="mt-4 rounded-2xl border border-[#dcdcdc] bg-white p-4">
-                            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#676767]">Owned Analytics Import</h3>
-                            <p className="mb-3 text-xs text-[#6d6d6d]">
-                                Upload exported CSV analytics to ingest true views/likes/comments/shares/saves/retention.
-                            </p>
-                            <form onSubmit={handleImportMetricsCsv} className="space-y-2">
-                                <select
-                                    value={metricsPlatform}
-                                    onChange={(e) => setMetricsPlatform(e.target.value as "youtube" | "instagram" | "tiktok")}
-                                    className="w-full rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222] focus:border-[#b8b8b8] focus:outline-none"
+                            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#676767]">After Connect</h3>
+                            <ul className="space-y-1 text-xs text-[#6d6d6d]">
+                                <li>1. Add 3-10 competitors in your platform.</li>
+                                <li>2. Generate scripts from research items.</li>
+                                <li>3. Run an audit and post outcomes.</li>
+                            </ul>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                                <Link
+                                    href="/competitors"
+                                    className="inline-flex rounded-xl border border-[#d9d9d9] bg-white px-3 py-2 text-sm font-medium text-[#2f2f2f] hover:bg-[#efefef]"
                                 >
-                                    <option value="youtube">YouTube CSV</option>
-                                    <option value="instagram">Instagram CSV</option>
-                                    <option value="tiktok">TikTok CSV</option>
-                                </select>
-                                <input
-                                    type="file"
-                                    accept=".csv,text/csv"
-                                    onChange={(e) => setMetricsCsvFile(e.target.files?.[0] || null)}
-                                    className="w-full rounded-xl border border-[#d8d8d8] bg-[#fbfbfb] px-2 py-2 text-xs text-[#222]"
-                                />
-                                <button
-                                    type="submit"
-                                    disabled={importingMetrics || !metricsCsvFile}
-                                    className="inline-flex rounded-xl border border-[#d9d9d9] bg-[#f8f8f8] px-3 py-2 text-sm font-medium text-[#2f2f2f] hover:bg-[#efefef] disabled:opacity-50"
+                                    Open Competitors
+                                </Link>
+                                <Link
+                                    href="/audit/new"
+                                    className="inline-flex rounded-xl border border-[#d9d9d9] bg-white px-3 py-2 text-sm font-medium text-[#2f2f2f] hover:bg-[#efefef]"
                                 >
-                                    {importingMetrics ? "Importing..." : "Import CSV Metrics"}
-                                </button>
-                            </form>
-                            {metricsMessage && (
-                                <p className="mt-2 text-xs text-[#5a5a5a]">{metricsMessage}</p>
-                            )}
-                            <Link
-                                href="/audit/new"
-                                className="mt-3 inline-flex rounded-xl border border-[#d9d9d9] bg-white px-3 py-2 text-sm font-medium text-[#2f2f2f] hover:bg-[#efefef]"
-                            >
-                                Open Audit Workspace
-                            </Link>
+                                    Open Audit Workspace
+                                </Link>
+                            </div>
                         </div>
                     </aside>
-                </div>
             </div>
-        </div>
+        </StudioAppShell>
     );
 }

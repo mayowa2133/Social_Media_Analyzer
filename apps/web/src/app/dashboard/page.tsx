@@ -16,7 +16,9 @@ import {
     logoutBackendSession,
     syncYouTubeSession,
 } from "@/lib/api";
+import { StudioAppShell } from "@/components/app-shell";
 import { DiagnosisCard } from "@/components/diagnosis-card";
+import { FlowStepper } from "@/components/flow-stepper";
 
 export default function DashboardPage() {
     const { data: session, status } = useSession();
@@ -121,36 +123,22 @@ export default function DashboardPage() {
             : "bg-[#fff5e8] border-[#ecdcc0] text-[#7a6032]";
 
     return (
-        <div className="min-h-screen bg-[#e8e8e8] px-3 py-4 md:px-8 md:py-6">
-            <div className="mx-auto w-full max-w-[1500px] overflow-hidden rounded-[30px] border border-[#d8d8d8] bg-[#f5f5f5] shadow-[0_35px_90px_rgba(0,0,0,0.12)]">
-                <header className="flex h-16 items-center justify-between border-b border-[#dfdfdf] bg-[#fafafa] px-4 md:px-6">
-                    <div className="flex items-center gap-4">
-                        <Link href="/" className="text-lg font-bold text-[#1f1f1f]">
-                            SPC Studio
-                        </Link>
-                        <nav className="hidden items-center gap-4 text-sm text-[#6b6b6b] md:flex">
-                            <Link href="/dashboard" className="font-medium text-[#1b1b1b]">Dashboard</Link>
-                            <Link href="/competitors" className="hover:text-[#151515]">Competitors</Link>
-                            <Link href="/research" className="hover:text-[#151515]">Research</Link>
-                            <Link href="/audit/new" className="hover:text-[#151515]">Audit Workspace</Link>
-                        </nav>
-                    </div>
-                    <div className="flex items-center gap-3">
-                        {session && (
-                            <button
-                                onClick={async () => {
-                                    await logoutBackendSession();
-                                    await signOut({ callbackUrl: "/" });
-                                }}
-                                className="rounded-xl border border-[#d6d6d6] bg-white px-3 py-1.5 text-sm text-[#575757] hover:text-[#1f1f1f]"
-                            >
-                                Logout
-                            </button>
-                        )}
-                    </div>
-                </header>
-
-                <main className="grid min-h-[calc(100vh-8.5rem)] grid-cols-1 xl:grid-cols-[320px_minmax(0,1fr)]">
+        <StudioAppShell
+            rightSlot={
+                session ? (
+                    <button
+                        onClick={async () => {
+                            await logoutBackendSession();
+                            await signOut({ callbackUrl: "/" });
+                        }}
+                        className="rounded-xl border border-[#d6d6d6] bg-white px-3 py-1.5 text-sm text-[#575757] hover:text-[#1f1f1f]"
+                    >
+                        Logout
+                    </button>
+                ) : null
+            }
+        >
+            <main className="grid min-h-[calc(100vh-8.5rem)] grid-cols-1 xl:grid-cols-[320px_minmax(0,1fr)]">
                     <aside className="border-b border-[#dfdfdf] bg-[#f8f8f8] p-4 xl:border-b-0 xl:border-r">
                         <h1 className="text-xl font-bold text-[#202020]">Creator Dashboard</h1>
                         <p className="mt-1 text-sm text-[#6f6f6f]">
@@ -217,6 +205,7 @@ export default function DashboardPage() {
                     </aside>
 
                     <section className="bg-[#f2f2f2] p-4 md:p-6">
+                        <FlowStepper />
                         {diagnosis && (
                             <div className="mb-6">
                                 <div className="mb-3 flex items-center justify-between">
@@ -268,8 +257,7 @@ export default function DashboardPage() {
                             </div>
                         )}
                     </section>
-                </main>
-            </div>
-        </div>
+            </main>
+        </StudioAppShell>
     );
 }

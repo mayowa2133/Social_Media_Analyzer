@@ -1,11 +1,11 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
 import {
     createMediaDownloadJob,
+    FlowStateResponse,
     getMediaDownloadJobStatus,
     getResearchItem,
     getAuditStatus,
@@ -16,6 +16,9 @@ import {
     syncYouTubeSession,
     uploadAuditVideo,
 } from "@/lib/api";
+import { StudioAppShell } from "@/components/app-shell";
+import { FlowStepper } from "@/components/flow-stepper";
+import { WorkflowAssistant } from "@/components/workflow-assistant";
 
 function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -62,6 +65,8 @@ export default function NewAuditPage() {
     const [videoFile, setVideoFile] = useState<File | null>(null);
     const [retentionJson, setRetentionJson] = useState("");
     const [platformMetricsJson, setPlatformMetricsJson] = useState("");
+    const [showAdvancedRetentionJson, setShowAdvancedRetentionJson] = useState(false);
+    const [showAdvancedPlatformMetricsJson, setShowAdvancedPlatformMetricsJson] = useState(false);
     const [retentionRows, setRetentionRows] = useState<RetentionRowInput[]>([{ time: "", retention: "" }]);
     const [guidedMetrics, setGuidedMetrics] = useState<GuidedPlatformMetricsInput>({
         views: "",
@@ -88,6 +93,15 @@ export default function NewAuditPage() {
         errorMessage?: string | null;
     } | null>(null);
     const [resolvedUploadId, setResolvedUploadId] = useState<string | null>(null);
+    const [appliedFlowPlatformDefault, setAppliedFlowPlatformDefault] = useState(false);
+    const [entryContext, setEntryContext] = useState<string | null>(null);
+    const sourceReady = sourceMode === "url" ? videoUrl.trim().length > 0 : Boolean(videoFile || resolvedUploadId);
+    const canRunAudit = sourceReady && !running;
+    const runAuditDisabledReason = sourceReady
+        ? null
+        : sourceMode === "url"
+            ? "Add a source URL to run audit."
+            : "Upload a file or finish URL download to run audit.";
 
     async function resolveUserId(): Promise<string | undefined> {
         const stored = getCurrentUserId();
@@ -144,7 +158,20 @@ export default function NewAuditPage() {
         if (typeof window === "undefined") {
             return;
         }
-        const sourceItemId = new URLSearchParams(window.location.search).get("source_item_id");
+        const params = new URLSearchParams(window.location.search);
+        const sourceItemId = params.get("source_item_id");
+        const platformParam = params.get("platform");
+        const sourceModeParam = params.get("source_mode");
+        const sourceContext = params.get("source_context");
+        if (platformParam === "youtube" || platformParam === "instagram" || platformParam === "tiktok") {
+            setSelectedPlatform(platformParam);
+        }
+        if (sourceModeParam === "url" || sourceModeParam === "upload") {
+            setSourceMode(sourceModeParam);
+        }
+        if (sourceContext) {
+            setEntryContext(sourceContext);
+        }
         if (sourceItemId) {
             setResearchItemId(sourceItemId);
             void loadResearchSource(sourceItemId);
@@ -179,6 +206,23 @@ export default function NewAuditPage() {
             setResolvedUploadId(null);
         }
     }, [mediaJob, resolvedUploadId, sourceMode, videoUrl]);
+
+    const applyFlowPlatformDefault = useCallback((state: FlowStateResponse) => {
+        if (appliedFlowPlatformDefault) {
+            return;
+        }
+        const preferred = state.preferred_platform;
+        if (!preferred || preferred === "youtube") {
+            setAppliedFlowPlatformDefault(true);
+            return;
+        }
+        if (researchItemId.trim() || videoUrl.trim() || resolvedUploadId || sourceMode === "upload") {
+            setAppliedFlowPlatformDefault(true);
+            return;
+        }
+        setSelectedPlatform((prev) => (prev === "youtube" ? preferred : prev));
+        setAppliedFlowPlatformDefault(true);
+    }, [appliedFlowPlatformDefault, researchItemId, resolvedUploadId, sourceMode, videoUrl]);
 
     async function pollMediaDownloadJob(
         jobId: string,
@@ -458,37 +502,15 @@ export default function NewAuditPage() {
     }
 
     return (
-        <div className="min-h-screen bg-[#e8e8e8] px-3 py-4 md:px-8 md:py-6">
-            <form onSubmit={handleRunAudit} className="mx-auto w-full max-w-[1500px]">
-                <div className="overflow-hidden rounded-[30px] border border-[#d8d8d8] bg-[#f5f5f5] shadow-[0_35px_90px_rgba(0,0,0,0.12)]">
-                    <header className="flex h-16 items-center justify-between border-b border-[#dfdfdf] bg-[#fafafa] px-4 md:px-6">
-                        <div className="flex items-center gap-4">
-                            <Link href="/" className="text-lg font-bold text-[#1f1f1f]">
-                                SPC Studio
-                            </Link>
-                            <nav className="hidden items-center gap-4 text-sm text-[#6b6b6b] md:flex">
-                                <Link href="/dashboard" className="hover:text-[#151515]">Dashboard</Link>
-                                <Link href="/competitors" className="hover:text-[#151515]">Competitors</Link>
-                                <Link href="/research" className="hover:text-[#151515]">Research</Link>
-                                <Link href="/audit/new" className="font-medium text-[#1b1b1b]">Audit Workspace</Link>
-                            </nav>
-                        </div>
-
-                        <div className="hidden items-center gap-2 lg:flex">
-                            <button type="button" className="rounded-xl border border-[#d8d8d8] bg-white px-3 py-1.5 text-xs text-[#444]">⟲</button>
-                            <button type="button" className="rounded-xl border border-[#d8d8d8] bg-white px-3 py-1.5 text-xs text-[#444]">⟲</button>
-                            <button type="button" className="rounded-xl border border-[#d8d8d8] bg-white px-3 py-1.5 text-xs text-[#444]">100%</button>
-                        </div>
-
-                        <div className="flex items-center gap-3">
-                            <span className="hidden rounded-full border border-[#d5d5d5] bg-white px-3 py-1 text-xs text-[#666] md:inline-flex">Single Creator</span>
-                            <button type="button" className="rounded-xl border border-[#d5d5d5] bg-white px-4 py-2 text-sm text-[#222]">
-                                Share
-                            </button>
-                        </div>
-                    </header>
-
-                    <div className="grid min-h-[calc(100vh-8.5rem)] grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)_320px]">
+        <StudioAppShell
+            rightSlot={
+                <span className="rounded-full border border-[#d5d5d5] bg-white px-3 py-1 text-xs text-[#666]">
+                    Audit Workspace
+                </span>
+            }
+        >
+            <form onSubmit={handleRunAudit}>
+                <div className="grid min-h-[calc(100vh-8.5rem)] grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)_320px]">
                         <aside className="border-b border-[#dfdfdf] bg-[#f8f8f8] p-4 xl:border-b-0 xl:border-r">
                             <h2 className="mb-1 text-sm font-semibold text-[#222]">Source Setup</h2>
                             <p className="mb-4 text-xs text-[#777]">Start with a URL or upload your clip.</p>
@@ -628,13 +650,9 @@ export default function NewAuditPage() {
                         </aside>
 
                         <section className="border-b border-[#dfdfdf] bg-[#f2f2f2] px-4 py-4 md:px-6 xl:border-b-0">
-                            <div className="mb-4 flex items-center justify-center gap-2">
-                                <button type="button" className="rounded-lg border border-[#dbdbdb] bg-white px-3 py-1.5 text-xs text-[#545454]">⟵</button>
-                                <button type="button" className="rounded-lg border border-[#dbdbdb] bg-white px-3 py-1.5 text-xs text-[#545454]">⟶</button>
-                                <button type="button" className="rounded-lg border border-[#dbdbdb] bg-white px-3 py-1.5 text-xs text-[#545454]">Preview</button>
-                            </div>
-
                             <div className="mx-auto flex max-w-4xl flex-col gap-5">
+                                <FlowStepper />
+                                <WorkflowAssistant context="audit" onFlowState={applyFlowPlatformDefault} />
                                 <div className="relative min-h-[360px] rounded-[28px] border border-[#dcdcdc] bg-white p-8 shadow-[0_14px_40px_rgba(0,0,0,0.06)] md:min-h-[500px]">
                                     <div className="absolute right-6 top-6 rounded-full border border-[#d9d9d9] bg-[#f7f7f7] px-3 py-1 text-[11px] text-[#666]">
                                         {sourceMode === "url" ? "URL Mode" : "Upload Mode"}
@@ -646,6 +664,11 @@ export default function NewAuditPage() {
                                         <p className="text-sm leading-relaxed text-[#666]">
                                             Upload a short/reel/tiktok/long-form video or paste a URL. We score likelihood using competitor benchmarks, platform quality signals, and a combined model.
                                         </p>
+                                        {entryContext && (
+                                            <p className="mt-2 text-[11px] text-[#6b6b6b]">
+                                                Launched from {entryContext.replaceAll("_", " ")}.
+                                            </p>
+                                        )}
                                     </div>
 
                                     <div className="mx-auto mt-8 max-w-2xl rounded-2xl border border-[#e0e0e0] bg-[#fafafa] p-4">
@@ -719,16 +742,28 @@ export default function NewAuditPage() {
                                     </div>
 
                                     <div className="mt-3">
-                                        <label className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-[#777]">
-                                            Advanced JSON Override (Optional)
-                                        </label>
-                                        <textarea
-                                            value={retentionJson}
-                                            onChange={(e) => setRetentionJson(e.target.value)}
-                                            placeholder='[{"time": 0, "retention": 100}, {"time": 5, "retention": 78}]'
-                                            className="min-h-[90px] w-full rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 font-mono text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowAdvancedRetentionJson((prev) => !prev)}
+                                            className="rounded-lg border border-[#d9d9d9] bg-white px-3 py-1 text-[11px] text-[#555] hover:bg-[#efefef]"
                                             disabled={running}
-                                        />
+                                        >
+                                            {showAdvancedRetentionJson ? "Hide Advanced JSON" : "Show Advanced JSON"}
+                                        </button>
+                                        {showAdvancedRetentionJson && (
+                                            <>
+                                                <label className="mb-1 mt-2 block text-[11px] font-medium uppercase tracking-wide text-[#777]">
+                                                    Advanced JSON Override (Optional)
+                                                </label>
+                                                <textarea
+                                                    value={retentionJson}
+                                                    onChange={(e) => setRetentionJson(e.target.value)}
+                                                    placeholder='[{"time": 0, "retention": 100}, {"time": 5, "retention": 78}]'
+                                                    className="min-h-[90px] w-full rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 font-mono text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
+                                                    disabled={running}
+                                                />
+                                            </>
+                                        )}
                                     </div>
                                 </div>
 
@@ -792,16 +827,28 @@ export default function NewAuditPage() {
                                     </div>
 
                                     <div className="mt-3">
-                                        <label className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-[#777]">
-                                            Advanced JSON Override (Optional)
-                                        </label>
-                                        <textarea
-                                            value={platformMetricsJson}
-                                            onChange={(e) => setPlatformMetricsJson(e.target.value)}
-                                            placeholder='{"views": 120000, "likes": 4600, "comments": 320, "shares": 210, "saves": 580, "avg_view_duration_s": 27.5, "ctr": 0.068}'
-                                            className="min-h-[90px] w-full rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 font-mono text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowAdvancedPlatformMetricsJson((prev) => !prev)}
+                                            className="rounded-lg border border-[#d9d9d9] bg-white px-3 py-1 text-[11px] text-[#555] hover:bg-[#efefef]"
                                             disabled={running}
-                                        />
+                                        >
+                                            {showAdvancedPlatformMetricsJson ? "Hide Advanced JSON" : "Show Advanced JSON"}
+                                        </button>
+                                        {showAdvancedPlatformMetricsJson && (
+                                            <>
+                                                <label className="mb-1 mt-2 block text-[11px] font-medium uppercase tracking-wide text-[#777]">
+                                                    Advanced JSON Override (Optional)
+                                                </label>
+                                                <textarea
+                                                    value={platformMetricsJson}
+                                                    onChange={(e) => setPlatformMetricsJson(e.target.value)}
+                                                    placeholder='{"views": 120000, "likes": 4600, "comments": 320, "shares": 210, "saves": 580, "avg_view_duration_s": 27.5, "ctr": 0.068}'
+                                                    className="min-h-[90px] w-full rounded-xl border border-[#d9d9d9] bg-[#fbfbfb] px-3 py-2 font-mono text-xs text-[#242424] placeholder:text-[#9f9f9f] focus:border-[#bdbdbd] focus:outline-none"
+                                                    disabled={running}
+                                                />
+                                            </>
+                                        )}
                                     </div>
                                 </div>
                             </div>
@@ -831,16 +878,28 @@ export default function NewAuditPage() {
                             </div>
 
                             <div className="mt-4 rounded-2xl border border-[#dcdcdc] bg-white p-4">
+                                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#676767]">Run Readiness</h3>
+                                <div className="space-y-1 text-xs text-[#5f5f5f]">
+                                    <p>{sourceReady ? "✓" : "•"} Source ready ({sourceMode === "url" ? "URL mode" : "Upload mode"})</p>
+                                    <p>✓ Platform selected ({selectedPlatform})</p>
+                                    <p>• Metrics optional (add when available for stronger confidence)</p>
+                                </div>
+                                {runAuditDisabledReason && (
+                                    <p className="mt-2 text-[11px] text-[#8a5b2f]">{runAuditDisabledReason}</p>
+                                )}
+                            </div>
+
+                            <div className="mt-4 rounded-2xl border border-[#dcdcdc] bg-white p-4">
                                 <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#676767]">Run Audit</h3>
                                 <p className="mb-3 text-xs text-[#6d6d6d]">
                                     Uses competitor history + your video signals to produce three score sets.
                                 </p>
                                 <button
                                     type="submit"
-                                    disabled={running}
+                                    disabled={!canRunAudit}
                                     className="w-full rounded-xl bg-[#1f1f1f] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#111] disabled:cursor-not-allowed disabled:bg-[#9e9e9e]"
                                 >
-                                    {running ? "Running Audit..." : "Run Audit"}
+                                    {running ? "Running Audit..." : canRunAudit ? "Run Audit" : "Add Source to Run"}
                                 </button>
                             </div>
 
@@ -853,9 +912,8 @@ export default function NewAuditPage() {
                                 </ul>
                             </div>
                         </aside>
-                    </div>
                 </div>
             </form>
-        </div>
+        </StudioAppShell>
     );
 }

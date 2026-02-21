@@ -26,13 +26,13 @@ export default function Home() {
                         href="/connect"
                         className="px-8 py-4 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold rounded-xl hover:opacity-90 transition-opacity shadow-lg shadow-purple-500/25"
                     >
-                        Connect YouTube Channel
+                        Connect Your Platform
                     </Link>
                     <Link
                         href="/dashboard"
                         className="px-8 py-4 bg-white/10 text-white font-semibold rounded-xl border border-white/20 hover:bg-white/20 transition-colors"
                     >
-                        View Demo
+                        Open Workspace
                     </Link>
                 </div>
 
