@@ -19,6 +19,7 @@ from routers import (
     analysis,
     audit,
     competitor,
+    feed,
     report,
     research,
     optimizer,
@@ -26,7 +27,12 @@ from routers import (
     billing,
     media,
 )
-from services.audit_queue import recover_stalled_audits, recover_stalled_media_download_jobs
+from services.audit_queue import (
+    recover_stalled_audits,
+    recover_stalled_feed_transcript_jobs,
+    recover_stalled_media_download_jobs,
+)
+from services.feed_discovery import run_due_feed_auto_ingest_service
 from services.outcomes import run_calibration_refresh_for_all_users_service
 
 
@@ -44,6 +50,26 @@ async def _periodic_outcome_recalibration() -> None:
             )
         except Exception as exc:
             print(f"⚠️ Outcome recalibration tick failed: {exc}")
+
+
+async def _periodic_feed_auto_ingest() -> None:
+    interval_minutes = max(int(settings.FEED_AUTO_INGEST_INTERVAL_MINUTES), 0)
+    if interval_minutes <= 0:
+        return
+    while True:
+        await asyncio.sleep(interval_minutes * 60)
+        try:
+            result = await run_due_feed_auto_ingest_service()
+            scheduled = int(result.get("scheduled_count", 0) or 0)
+            completed = int(result.get("completed_count", 0) or 0)
+            failed = int(result.get("failed_count", 0) or 0)
+            if scheduled:
+                print(
+                    f"📰 Feed auto-ingest tick: scheduled={scheduled} "
+                    f"completed={completed} failed={failed}"
+                )
+        except Exception as exc:
+            print(f"⚠️ Feed auto-ingest tick failed: {exc}")
 
 
 @asynccontextmanager
@@ -71,12 +97,25 @@ async def lifespan(app: FastAPI):
             print(f"♻️ Recovered {recovered_media} stalled media download jobs after startup.")
     except Exception as exc:
         print(f"⚠️ Stalled media recovery skipped: {exc}")
+    try:
+        recovered_transcripts = await recover_stalled_feed_transcript_jobs()
+        if recovered_transcripts:
+            print(f"♻️ Recovered {recovered_transcripts} stalled feed transcript jobs after startup.")
+    except Exception as exc:
+        print(f"⚠️ Stalled feed transcript recovery skipped: {exc}")
     recalibration_task = None
+    feed_auto_ingest_task = None
     if settings.OUTCOME_LEARNING_ENABLED and int(settings.OUTCOME_RECALIBRATE_INTERVAL_MINUTES) > 0:
         recalibration_task = asyncio.create_task(_periodic_outcome_recalibration())
         print(
             "📅 Outcome recalibration loop enabled "
             f"(every {int(settings.OUTCOME_RECALIBRATE_INTERVAL_MINUTES)} min)."
+        )
+    if settings.RESEARCH_ENABLED and settings.FEED_AUTO_INGEST_ENABLED and int(settings.FEED_AUTO_INGEST_INTERVAL_MINUTES) > 0:
+        feed_auto_ingest_task = asyncio.create_task(_periodic_feed_auto_ingest())
+        print(
+            "📅 Feed auto-ingest loop enabled "
+            f"(every {int(settings.FEED_AUTO_INGEST_INTERVAL_MINUTES)} min)."
         )
     yield
     # Shutdown
@@ -84,6 +123,12 @@ async def lifespan(app: FastAPI):
         recalibration_task.cancel()
         try:
             await recalibration_task
+        except asyncio.CancelledError:
+            pass
+    if feed_auto_ingest_task is not None:
+        feed_auto_ingest_task.cancel()
+        try:
+            await feed_auto_ingest_task
         except asyncio.CancelledError:
             pass
     print("👋 Shutting down API...")
@@ -112,6 +157,7 @@ app.include_router(youtube.router, prefix="/youtube", tags=["YouTube"])
 app.include_router(analysis.router, prefix="/analysis", tags=["Analysis"])
 app.include_router(audit.router, prefix="/audit", tags=["Audit"])
 app.include_router(competitor.router, prefix="/competitors", tags=["Competitor"])
+app.include_router(feed.router, prefix="/feed", tags=["Feed"])
 app.include_router(report.router, prefix="/report", tags=["Report"])
 app.include_router(research.router, prefix="/research", tags=["Research"])
 app.include_router(optimizer.router, prefix="/optimizer", tags=["Optimizer"])

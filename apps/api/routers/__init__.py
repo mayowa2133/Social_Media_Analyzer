@@ -8,6 +8,7 @@ from . import (
     audit,
     competitor,
     report,
+    feed,
     research,
     optimizer,
     outcomes,

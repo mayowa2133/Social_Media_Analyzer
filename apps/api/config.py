@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     DELETE_UPLOAD_AFTER_AUDIT: bool = False
     BLUEPRINT_CACHE_TTL_MINUTES: int = 60
     TRANSCRIPT_CACHE_TTL_SECONDS: int = 604800
+    FEED_AUTO_INGEST_ENABLED: bool = True
+    FEED_AUTO_INGEST_INTERVAL_MINUTES: int = 15
     
     # Feature Flags
     ENABLE_TIKTOK_CONNECTORS: bool = False

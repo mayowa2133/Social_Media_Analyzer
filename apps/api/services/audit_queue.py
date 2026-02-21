@@ -13,6 +13,7 @@ from sqlalchemy import select
 from config import settings
 from database import async_session_maker
 from models.audit import Audit
+from models.feed_transcript_job import FeedTranscriptJob
 from models.media_download_job import MediaDownloadJob
 
 
@@ -20,6 +21,7 @@ AUDIT_QUEUE_NAME = "audit_jobs"
 MEDIA_QUEUE_NAME = "media_jobs"
 IN_PROGRESS_STATUSES = ("downloading", "processing_video", "processing_audio", "analyzing")
 MEDIA_IN_PROGRESS_STATUSES = ("queued", "downloading", "processing")
+TRANSCRIPT_IN_PROGRESS_STATUSES = ("queued", "processing")
 
 
 def get_redis_connection() -> Redis:
@@ -81,6 +83,20 @@ def enqueue_media_download_job(job_id: str) -> Job:
     )
 
 
+def enqueue_feed_transcript_job(job_id: str) -> Job:
+    """Enqueue a feed transcript extraction job."""
+    queue = get_media_queue()
+    return queue.enqueue(
+        "services.feed_transcript.process_feed_transcript_job",
+        job_id,
+        job_id=f"feed_transcript:{job_id}",
+        retry=Retry(max=3, interval=[10, 30, 120]),
+        job_timeout=1200,
+        result_ttl=86400,
+        failure_ttl=86400,
+    )
+
+
 async def recover_stalled_audits(max_age_minutes: int = 120) -> int:
     """Mark stale in-progress audits as failed after restarts/worker interruptions."""
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=max(max_age_minutes, 1))
@@ -115,6 +131,28 @@ async def recover_stalled_media_download_jobs(max_age_minutes: int = 120) -> int
             job.status = "failed"
             job.error_code = "stalled"
             job.error_message = "Media download was interrupted. Re-run download from workspace."
+            job.completed_at = datetime.now(timezone.utc)
+            job.progress = max(int(job.progress or 0), 5)
+        if jobs:
+            await db.commit()
+        return len(jobs)
+
+
+async def recover_stalled_feed_transcript_jobs(max_age_minutes: int = 120) -> int:
+    """Mark stale in-progress feed transcript jobs as failed after restarts/worker interruptions."""
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max(max_age_minutes, 1))
+    async with async_session_maker() as db:
+        result = await db.execute(
+            select(FeedTranscriptJob).where(
+                FeedTranscriptJob.status.in_(TRANSCRIPT_IN_PROGRESS_STATUSES),
+                FeedTranscriptJob.created_at < cutoff,
+            )
+        )
+        jobs = result.scalars().all()
+        for job in jobs:
+            job.status = "failed"
+            job.error_code = "stalled"
+            job.error_message = "Transcript extraction was interrupted. Re-run transcript from workspace."
             job.completed_at = datetime.now(timezone.utc)
             job.progress = max(int(job.progress or 0), 5)
         if jobs:

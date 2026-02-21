@@ -19,3 +19,8 @@ from .credit_ledger import CreditLedger
 from .report_share_link import ReportShareLink
 from .media_asset import MediaAsset
 from .media_download_job import MediaDownloadJob
+from .feed_transcript_job import FeedTranscriptJob
+from .feed_source_follow import FeedSourceFollow
+from .feed_auto_ingest_run import FeedAutoIngestRun
+from .feed_repost_package import FeedRepostPackage
+from .feed_telemetry_event import FeedTelemetryEvent

@@ -1533,6 +1533,670 @@ export async function exportResearchCollection(payload: {
     });
 }
 
+export interface FeedDiscoveryItem {
+    item_id: string;
+    platform: "youtube" | "instagram" | "tiktok";
+    source_type: string;
+    url?: string | null;
+    external_id?: string | null;
+    creator_handle?: string | null;
+    creator_display_name?: string | null;
+    title?: string | null;
+    caption?: string | null;
+    metrics: {
+        views: number;
+        likes: number;
+        comments: number;
+        shares: number;
+        saves: number;
+    };
+    published_at?: string | null;
+    created_at?: string | null;
+    engagement_rate: number;
+    views_per_hour: number;
+    trending_score: number;
+}
+
+export interface FeedDiscoverResponse {
+    run_id: string;
+    platform: "youtube" | "instagram" | "tiktok";
+    mode: "profile" | "hashtag" | "keyword" | "audio";
+    query: string;
+    timeframe: "24h" | "7d" | "30d" | "90d" | "all";
+    ingestion_method: string;
+    source_health: Record<string, string>;
+    page: number;
+    limit: number;
+    total_count: number;
+    has_more: boolean;
+    items: FeedDiscoveryItem[];
+}
+
+export interface FeedSearchResponse {
+    platform: "youtube" | "instagram" | "tiktok" | "all";
+    mode?: "profile" | "hashtag" | "keyword" | "audio";
+    query: string;
+    timeframe: "24h" | "7d" | "30d" | "90d" | "all";
+    page: number;
+    limit: number;
+    total_count: number;
+    has_more: boolean;
+    items: FeedDiscoveryItem[];
+}
+
+export async function discoverFeedItems(payload: {
+    platform: "youtube" | "instagram" | "tiktok";
+    mode: "profile" | "hashtag" | "keyword" | "audio";
+    query: string;
+    timeframe?: "24h" | "7d" | "30d" | "90d" | "all";
+    sort_by?: "trending_score" | "engagement_rate" | "views_per_hour" | "views" | "likes" | "comments" | "shares" | "saves" | "posted_at" | "created_at";
+    sort_direction?: "asc" | "desc";
+    page?: number;
+    limit?: number;
+    userId?: string;
+}): Promise<FeedDiscoverResponse> {
+    return fetchApi<FeedDiscoverResponse>("/feed/discover", {
+        method: "POST",
+        body: {
+            platform: payload.platform,
+            mode: payload.mode,
+            query: payload.query,
+            timeframe: payload.timeframe || "7d",
+            sort_by: payload.sort_by || "trending_score",
+            sort_direction: payload.sort_direction || "desc",
+            page: payload.page || 1,
+            limit: payload.limit || 20,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export async function searchFeedItems(payload: {
+    platform?: "youtube" | "instagram" | "tiktok";
+    mode?: "profile" | "hashtag" | "keyword" | "audio";
+    query?: string;
+    timeframe?: "24h" | "7d" | "30d" | "90d" | "all";
+    sort_by?: "trending_score" | "engagement_rate" | "views_per_hour" | "views" | "likes" | "comments" | "shares" | "saves" | "posted_at" | "created_at";
+    sort_direction?: "asc" | "desc";
+    page?: number;
+    limit?: number;
+    userId?: string;
+}): Promise<FeedSearchResponse> {
+    return fetchApi<FeedSearchResponse>("/feed/search", {
+        method: "POST",
+        body: {
+            platform: payload.platform,
+            mode: payload.mode,
+            query: payload.query || "",
+            timeframe: payload.timeframe || "all",
+            sort_by: payload.sort_by || "trending_score",
+            sort_direction: payload.sort_direction || "desc",
+            page: payload.page || 1,
+            limit: payload.limit || 20,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export async function toggleFeedFavorite(payload: {
+    itemId: string;
+    favorite: boolean;
+    userId?: string;
+}): Promise<{ item_id: string; favorite: boolean }> {
+    return fetchApi<{ item_id: string; favorite: boolean }>("/feed/favorites/toggle", {
+        method: "POST",
+        body: {
+            item_id: payload.itemId,
+            favorite: payload.favorite,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export async function assignFeedItemsToCollection(payload: {
+    itemIds: string[];
+    collectionId: string;
+    userId?: string;
+}): Promise<{
+    collection_id: string;
+    assigned_count: number;
+    missing_count: number;
+    missing_item_ids: string[];
+}> {
+    return fetchApi("/feed/collections/assign", {
+        method: "POST",
+        body: {
+            item_ids: payload.itemIds,
+            collection_id: payload.collectionId,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export async function exportFeedItems(payload: {
+    itemIds?: string[];
+    platform?: "youtube" | "instagram" | "tiktok";
+    mode?: "profile" | "hashtag" | "keyword" | "audio";
+    query?: string;
+    timeframe?: "24h" | "7d" | "30d" | "90d" | "all";
+    sort_by?: "trending_score" | "engagement_rate" | "views_per_hour" | "views" | "likes" | "comments" | "shares" | "saves" | "posted_at" | "created_at";
+    sort_direction?: "asc" | "desc";
+    limit?: number;
+    maxRows?: number;
+    format: "csv" | "json";
+    userId?: string;
+}): Promise<{
+    export_id: string;
+    status: string;
+    format: "csv" | "json";
+    item_count: number;
+    signed_url: string;
+}> {
+    return fetchApi("/feed/export", {
+        method: "POST",
+        body: {
+            item_ids: payload.itemIds,
+            platform: payload.platform,
+            mode: payload.mode,
+            query: payload.query || "",
+            timeframe: payload.timeframe || "all",
+            sort_by: payload.sort_by || "trending_score",
+            sort_direction: payload.sort_direction || "desc",
+            limit: payload.limit || 100,
+            max_rows: payload.maxRows || 500,
+            format: payload.format,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export interface FeedBulkJobItem {
+    item_id: string;
+    job_id?: string | null;
+    status: string;
+    queue_job_id?: string | null;
+    error_code?: string | null;
+    error_message?: string | null;
+}
+
+export interface FeedBulkDownloadResponse {
+    submitted_count: number;
+    queued_count: number;
+    failed_count: number;
+    skipped_count: number;
+    jobs: FeedBulkJobItem[];
+}
+
+export interface FeedBulkDownloadStatusItem {
+    job_id: string;
+    status: string;
+    progress: number;
+    queue_job_id?: string | null;
+    media_asset_id?: string | null;
+    upload_id?: string | null;
+    error_code?: string | null;
+    error_message?: string | null;
+}
+
+export interface FeedBulkDownloadStatusResponse {
+    requested_count: number;
+    jobs: FeedBulkDownloadStatusItem[];
+}
+
+export interface FeedBulkTranscriptStatusItem {
+    job_id: string;
+    status: string;
+    progress: number;
+    queue_job_id?: string | null;
+    item_id?: string | null;
+    transcript_source?: string | null;
+    transcript_preview?: string | null;
+    error_code?: string | null;
+    error_message?: string | null;
+}
+
+export interface FeedBulkTranscriptStatusResponse {
+    requested_count: number;
+    jobs: FeedBulkTranscriptStatusItem[];
+}
+
+export async function startFeedBulkDownload(payload: {
+    itemIds: string[];
+    userId?: string;
+}): Promise<FeedBulkDownloadResponse> {
+    return fetchApi<FeedBulkDownloadResponse>("/feed/download/bulk", {
+        method: "POST",
+        body: {
+            item_ids: payload.itemIds,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export async function getFeedBulkDownloadStatus(payload: {
+    jobIds: string[];
+    userId?: string;
+}): Promise<FeedBulkDownloadStatusResponse> {
+    return fetchApi<FeedBulkDownloadStatusResponse>("/feed/download/status", {
+        method: "POST",
+        body: {
+            job_ids: payload.jobIds,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export async function startFeedTranscriptBulk(payload: {
+    itemIds: string[];
+    userId?: string;
+}): Promise<FeedBulkDownloadResponse> {
+    return fetchApi<FeedBulkDownloadResponse>("/feed/transcripts/bulk", {
+        method: "POST",
+        body: {
+            item_ids: payload.itemIds,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export async function getFeedTranscriptBulkStatus(payload: {
+    jobIds: string[];
+    userId?: string;
+}): Promise<FeedBulkTranscriptStatusResponse> {
+    return fetchApi<FeedBulkTranscriptStatusResponse>("/feed/transcripts/status", {
+        method: "POST",
+        body: {
+            job_ids: payload.jobIds,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export interface FeedFollow {
+    id: string;
+    platform: "youtube" | "instagram" | "tiktok";
+    mode: "profile" | "hashtag" | "keyword" | "audio";
+    query: string;
+    timeframe: "24h" | "7d" | "30d" | "90d" | "all";
+    sort_by: "trending_score" | "engagement_rate" | "views_per_hour" | "views" | "likes" | "comments" | "shares" | "saves" | "posted_at" | "created_at";
+    sort_direction: "asc" | "desc";
+    limit: number;
+    cadence_minutes: number;
+    is_active: boolean;
+    last_run_at?: string | null;
+    next_run_at?: string | null;
+    last_error?: string | null;
+    created_at?: string | null;
+}
+
+export interface FeedIngestRun {
+    run_id: string;
+    follow_id: string;
+    status: string;
+    item_count: number;
+    item_ids: string[];
+    error_message?: string | null;
+    started_at?: string | null;
+    completed_at?: string | null;
+    created_at?: string | null;
+}
+
+export async function upsertFeedFollow(payload: {
+    platform: "youtube" | "instagram" | "tiktok";
+    mode: "profile" | "hashtag" | "keyword" | "audio";
+    query: string;
+    timeframe?: "24h" | "7d" | "30d" | "90d" | "all";
+    sort_by?: "trending_score" | "engagement_rate" | "views_per_hour" | "views" | "likes" | "comments" | "shares" | "saves" | "posted_at" | "created_at";
+    sort_direction?: "asc" | "desc";
+    limit?: number;
+    cadence?: "15m" | "1h" | "3h" | "6h" | "12h" | "24h";
+    cadenceMinutes?: number;
+    isActive?: boolean;
+    userId?: string;
+}): Promise<{ created: boolean; follow: FeedFollow }> {
+    return fetchApi<{ created: boolean; follow: FeedFollow }>("/feed/follows/upsert", {
+        method: "POST",
+        body: {
+            platform: payload.platform,
+            mode: payload.mode,
+            query: payload.query,
+            timeframe: payload.timeframe || "7d",
+            sort_by: payload.sort_by || "trending_score",
+            sort_direction: payload.sort_direction || "desc",
+            limit: payload.limit || 20,
+            cadence: payload.cadence || "6h",
+            cadence_minutes: payload.cadenceMinutes,
+            is_active: payload.isActive ?? true,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export async function listFeedFollows(payload?: {
+    platform?: "youtube" | "instagram" | "tiktok";
+    activeOnly?: boolean;
+    userId?: string;
+}): Promise<{ count: number; follows: FeedFollow[] }> {
+    const params = new URLSearchParams();
+    if (payload?.platform) {
+        params.set("platform", payload.platform);
+    }
+    params.set("active_only", String(payload?.activeOnly ?? true));
+    params.set("user_id", resolveUserId(payload?.userId));
+    const query = params.toString();
+    return fetchApi<{ count: number; follows: FeedFollow[] }>(`/feed/follows${query ? `?${query}` : ""}`, {
+        method: "GET",
+    });
+}
+
+export async function deleteFeedFollow(payload: {
+    followId: string;
+    userId?: string;
+}): Promise<{ deleted: boolean; follow_id: string }> {
+    const params = new URLSearchParams();
+    params.set("user_id", resolveUserId(payload.userId));
+    return fetchApi<{ deleted: boolean; follow_id: string }>(
+        `/feed/follows/${payload.followId}?${params.toString()}`,
+        { method: "DELETE" }
+    );
+}
+
+export async function runFeedFollowIngest(payload?: {
+    followIds?: string[];
+    runDueOnly?: boolean;
+    maxFollows?: number;
+    userId?: string;
+}): Promise<{
+    scheduled_count: number;
+    completed_count: number;
+    failed_count: number;
+    runs: FeedIngestRun[];
+}> {
+    return fetchApi<{
+        scheduled_count: number;
+        completed_count: number;
+        failed_count: number;
+        runs: FeedIngestRun[];
+    }>("/feed/follows/ingest", {
+        method: "POST",
+        body: {
+            follow_ids: payload?.followIds,
+            run_due_only: payload?.runDueOnly ?? false,
+            max_follows: payload?.maxFollows ?? 25,
+            user_id: resolveUserId(payload?.userId),
+        },
+    });
+}
+
+export async function listFeedIngestRuns(payload?: {
+    followId?: string;
+    limit?: number;
+    userId?: string;
+}): Promise<{ count: number; runs: FeedIngestRun[] }> {
+    const params = new URLSearchParams();
+    if (payload?.followId) {
+        params.set("follow_id", payload.followId);
+    }
+    params.set("limit", String(payload?.limit ?? 50));
+    params.set("user_id", resolveUserId(payload?.userId));
+    return fetchApi<{ count: number; runs: FeedIngestRun[] }>(
+        `/feed/follows/runs?${params.toString()}`,
+        { method: "GET" }
+    );
+}
+
+export interface FeedRepostPackage {
+    package_id: string;
+    source_item_id: string;
+    status: "draft" | "scheduled" | "published" | "archived";
+    target_platforms: Array<"youtube" | "instagram" | "tiktok">;
+    package: Record<string, any>;
+    created_at?: string | null;
+    updated_at?: string | null;
+}
+
+export async function createFeedRepostPackage(payload: {
+    sourceItemId: string;
+    targetPlatforms?: Array<"youtube" | "instagram" | "tiktok">;
+    objective?: string;
+    tone?: string;
+    userId?: string;
+}): Promise<FeedRepostPackage> {
+    return fetchApi<FeedRepostPackage>("/feed/repost/package", {
+        method: "POST",
+        body: {
+            source_item_id: payload.sourceItemId,
+            target_platforms: payload.targetPlatforms,
+            objective: payload.objective || "maximize_reach",
+            tone: payload.tone || "direct",
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export async function listFeedRepostPackages(payload?: {
+    sourceItemId?: string;
+    limit?: number;
+    userId?: string;
+}): Promise<{ count: number; packages: FeedRepostPackage[] }> {
+    const params = new URLSearchParams();
+    if (payload?.sourceItemId) {
+        params.set("source_item_id", payload.sourceItemId);
+    }
+    params.set("limit", String(payload?.limit ?? 20));
+    params.set("user_id", resolveUserId(payload?.userId));
+    return fetchApi<{ count: number; packages: FeedRepostPackage[] }>(
+        `/feed/repost/packages?${params.toString()}`,
+        { method: "GET" }
+    );
+}
+
+export async function getFeedRepostPackage(payload: {
+    packageId: string;
+    userId?: string;
+}): Promise<FeedRepostPackage> {
+    const params = new URLSearchParams();
+    params.set("user_id", resolveUserId(payload.userId));
+    return fetchApi<FeedRepostPackage>(`/feed/repost/packages/${payload.packageId}?${params.toString()}`, {
+        method: "GET",
+    });
+}
+
+export async function updateFeedRepostPackageStatus(payload: {
+    packageId: string;
+    status: "draft" | "scheduled" | "published" | "archived";
+    userId?: string;
+}): Promise<FeedRepostPackage> {
+    return fetchApi<FeedRepostPackage>(`/feed/repost/packages/${payload.packageId}/status`, {
+        method: "POST",
+        body: {
+            status: payload.status,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export interface FeedLoopVariantResult {
+    source_item_id: string;
+    platform: "youtube" | "instagram" | "tiktok";
+    topic: string;
+    audience: string;
+    objective: string;
+    optimizer: Record<string, any>;
+    credits: {
+        charged: number;
+        balance_after: number;
+    };
+}
+
+export async function runFeedLoopVariantGenerate(payload: {
+    sourceItemId: string;
+    platform?: "youtube" | "instagram" | "tiktok";
+    topic?: string;
+    audience?: string;
+    objective?: string;
+    tone?: string;
+    durationS?: number;
+    generationMode?: "ai_first_fallback";
+    constraints?: Record<string, any>;
+    userId?: string;
+}): Promise<FeedLoopVariantResult> {
+    return fetchApi<FeedLoopVariantResult>("/feed/loop/variant_generate", {
+        method: "POST",
+        body: {
+            source_item_id: payload.sourceItemId,
+            platform: payload.platform,
+            topic: payload.topic,
+            audience: payload.audience,
+            objective: payload.objective,
+            tone: payload.tone || "bold",
+            duration_s: payload.durationS,
+            generation_mode: payload.generationMode || "ai_first_fallback",
+            constraints: payload.constraints,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export interface FeedLoopAuditResult {
+    audit_id: string;
+    status: string;
+    source_item_id: string;
+    upload_id: string;
+    report_path: string;
+    credits: {
+        charged: number;
+        balance_after: number;
+    };
+}
+
+export async function runFeedLoopAudit(payload: {
+    sourceItemId: string;
+    platform?: "youtube" | "instagram" | "tiktok";
+    retentionPoints?: Array<{ time: number; retention: number }>;
+    platformMetrics?: Record<string, any>;
+    draftSnapshotId?: string;
+    repostPackageId?: string;
+    userId?: string;
+}): Promise<FeedLoopAuditResult> {
+    return fetchApi<FeedLoopAuditResult>("/feed/loop/audit", {
+        method: "POST",
+        body: {
+            source_item_id: payload.sourceItemId,
+            platform: payload.platform,
+            retention_points: payload.retentionPoints,
+            platform_metrics: payload.platformMetrics,
+            draft_snapshot_id: payload.draftSnapshotId,
+            repost_package_id: payload.repostPackageId,
+            user_id: resolveUserId(payload.userId),
+        },
+    });
+}
+
+export interface FeedLoopSummary {
+    source_item_id: string;
+    source_item: Record<string, any>;
+    latest_repost_package?: Record<string, any> | null;
+    latest_draft_snapshot?: Record<string, any> | null;
+    latest_audit?: Record<string, any> | null;
+    stage_completion: {
+        discovered: boolean;
+        packaged: boolean;
+        scripted: boolean;
+        audited: boolean;
+        reported: boolean;
+    };
+    next_step: string;
+}
+
+export async function getFeedLoopSummary(payload: {
+    sourceItemId: string;
+    userId?: string;
+}): Promise<FeedLoopSummary> {
+    const params = new URLSearchParams();
+    params.set("source_item_id", payload.sourceItemId);
+    params.set("user_id", resolveUserId(payload.userId));
+    return fetchApi<FeedLoopSummary>(`/feed/loop/summary?${params.toString()}`, {
+        method: "GET",
+    });
+}
+
+export interface FeedTelemetrySummary {
+    window_days: number;
+    event_volume: {
+        total_events: number;
+        by_event: Record<string, number>;
+        by_status: Record<string, number>;
+        error_count: number;
+    };
+    funnel: {
+        discovered_count: number;
+        packaged_count: number;
+        scripted_count: number;
+        audited_count: number;
+        reported_count: number;
+        discover_to_package_pct: number;
+        package_to_script_pct: number;
+        script_to_audit_pct: number;
+        audit_to_report_pct: number;
+    };
+}
+
+export async function getFeedTelemetrySummary(payload?: {
+    days?: number;
+    userId?: string;
+}): Promise<FeedTelemetrySummary> {
+    const params = new URLSearchParams();
+    params.set("days", String(payload?.days ?? 7));
+    params.set("user_id", resolveUserId(payload?.userId));
+    return fetchApi<FeedTelemetrySummary>(`/feed/telemetry/summary?${params.toString()}`, {
+        method: "GET",
+    });
+}
+
+export interface FeedTelemetryEventItem {
+    event_id: string;
+    event_name: string;
+    status: string;
+    platform?: string | null;
+    source_item_id?: string | null;
+    details: Record<string, any>;
+    created_at?: string | null;
+}
+
+export async function listFeedTelemetryEvents(payload?: {
+    days?: number;
+    limit?: number;
+    eventName?: string;
+    status?: string;
+    userId?: string;
+}): Promise<{ window_days: number; count: number; events: FeedTelemetryEventItem[] }> {
+    const params = new URLSearchParams();
+    params.set("days", String(payload?.days ?? 7));
+    params.set("limit", String(payload?.limit ?? 50));
+    if (payload?.eventName) {
+        params.set("event_name", payload.eventName);
+    }
+    if (payload?.status) {
+        params.set("status", payload.status);
+    }
+    params.set("user_id", resolveUserId(payload?.userId));
+    return fetchApi<{ window_days: number; count: number; events: FeedTelemetryEventItem[] }>(
+        `/feed/telemetry/events?${params.toString()}`,
+        { method: "GET" }
+    );
+}
+
+export function getFeedExportDownloadUrl(signedPath: string): string {
+    if (!signedPath) {
+        return "";
+    }
+    if (/^https?:\/\//i.test(signedPath)) {
+        return signedPath;
+    }
+    return `${API_BASE_URL}${signedPath}`;
+}
+
 export function getApiBaseUrl(): string {
     return API_BASE_URL;
 }
